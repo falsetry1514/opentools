@@ -1,0 +1,8 @@
+
+# pixi environments
+.pixi
+*.egg-info
+/tests
+.DS_Store
+/target
+*.lock

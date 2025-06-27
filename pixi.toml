@@ -1,0 +1,15 @@
+[workspace]
+authors = ["Falsetry <falsetryczz@Gmail.com>"]
+channels = ["conda-forge", "bioconda"]
+name = "opentools"
+platforms = ["osx-64"]
+version = "0.1.0"
+
+[tasks]
+opentools = "./target/release/opentools"
+
+[dependencies]
+rust = ">=1.87.0,<1.88"
+python = ">=3.12"
+cutadapt = { channel = "bioconda" }
+STAR = { channel = "bioconda" }
