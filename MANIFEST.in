@@ -1,0 +1,3 @@
+include binaries/*/*
+include README.md
+include LICENSE

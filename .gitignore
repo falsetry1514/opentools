@@ -2,7 +2,12 @@
 # pixi environments
 .pixi
 *.egg-info
+
+# build environments
 /tests
-.DS_Store
 /target
+.DS_Store
+
+# misc
 *.lock
+dist

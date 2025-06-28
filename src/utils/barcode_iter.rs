@@ -4,7 +4,7 @@ use super::{
     position::Position,
     error::AppError,
 };
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::atomic::AtomicUsize};
 use std::io::{Write, self};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -173,6 +173,7 @@ impl<'a> BarcodesIter<'a, HashSet<String>> {
     pub fn extract_sample_barcodes(mut self, capacity: usize) -> Result<HashSet<String>, AppError> {
         let barcode_set = DashSet::new();
         let capacity_reached = AtomicBool::new(false);
+        let unique_barcode_num = AtomicUsize::new(0);
         
         self.inner.records().par_bridge().try_for_each(
             |rec| -> Result<(), AppError> {
@@ -183,18 +184,23 @@ impl<'a> BarcodesIter<'a, HashSet<String>> {
             let rec = rec?;
             
             let (seq, qual) = (
-                self.pos.safe_slice(&rec.seq),
-                self.pos.safe_slice(&rec.qual),
+                &rec.seq[self.pos.range()],
+                &rec.qual[self.pos.range()],
             );
             
             if Self::fail_quality_filter(qual) || Self::fail_sequence_filter(seq, self.pattern) {
+                return Ok(());
+            }
+
+            if capacity_reached.load(Ordering::Relaxed) {
                 return Ok(());
             }
             
             let barcode = Self::process_barcode(seq, self.pos.is_revcomp());
             
             if barcode_set.insert(barcode) {
-                if barcode_set.len() >= capacity {
+                let count = unique_barcode_num.fetch_add(1, Ordering::Relaxed) + 1;
+                if count >= capacity {
                     capacity_reached.store(true, Ordering::Relaxed);
                 }
             }

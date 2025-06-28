@@ -198,37 +198,10 @@ pub fn tilesmatch(args: TilesMatchArgs) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::error::AppError;
-    use tempfile::tempdir;
 
     #[test]
     fn test_default_thread_counts() {
         assert_eq!(DEFAULT_LINUX_THREADS, 12);
         assert_eq!(DEFAULT_MAC_THREADS, 3);
-    }
-
-    #[test]
-    fn test_viewbarcode_returns_ok() {
-        // This is just a placeholder test
-        let result: Result<(), AppError> = Ok(());
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_tilesmatch_returns_ok() {
-        // This is just a placeholder test
-        let result: Result<(), AppError> = Ok(());
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_directory_creation() {
-        let dir = tempdir().unwrap();
-        let path = dir.path();
-        
-        // Test that we can create a directory
-        let test_dir = path.join("test_dir");
-        fs::create_dir(&test_dir).unwrap();
-        assert!(test_dir.exists());
     }
 }
