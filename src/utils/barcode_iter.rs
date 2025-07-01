@@ -1,26 +1,20 @@
-
 use super::{
+    error::AppError,
     fastqfile::{FastqReader, check_base_match, complement},
     position::Position,
-    error::AppError,
 };
-use std::{collections::HashSet, sync::atomic::AtomicUsize};
-use std::io::{Write, self};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use seq_io::fastq::Record;
-use dashmap::DashSet;
-use rayon::prelude::*;
+use std::collections::HashSet;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
 pub fn validate_absolute_dirpath(s: &str) -> io::Result<PathBuf> {
     let mut path = Path::new(s).to_path_buf();
     if !path.is_dir() {
-        return Err(
-            io::Error::new(
-                io::ErrorKind::NotADirectory,
-                format!("{} is not a directory", s)
-            )
-        );
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            format!("{} is not a directory", s),
+        ));
     }
     if path.is_relative() {
         path = path.canonicalize()?;
@@ -31,12 +25,10 @@ pub fn validate_absolute_dirpath(s: &str) -> io::Result<PathBuf> {
 pub fn validate_absolute_filepath(s: &str) -> io::Result<PathBuf> {
     let path = Path::new(s).to_path_buf();
     if !path.is_file() {
-        return Err(
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("{} is not a file", s)
-            )
-        );
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is not a file", s),
+        ));
     }
     Ok(path)
 }
@@ -48,14 +40,9 @@ pub struct BarcodesIter<'a, W> {
     writer: W,
 }
 
-impl<'a, W> BarcodesIter<'a, W> { 
+impl<'a, W> BarcodesIter<'a, W> {
     // Factory mathod
-    pub fn new(
-        inner: FastqReader, 
-        pos: &'a Position, 
-        pattern: &'a str, 
-        writer: W,
-    ) -> Self {
+    pub fn new(inner: FastqReader, pos: &'a Position, pattern: &'a str, writer: W) -> Self {
         Self {
             inner,
             pos,
@@ -68,14 +55,20 @@ impl<'a, W> BarcodesIter<'a, W> {
     fn fail_quality_filter(qual: &[u8]) -> bool {
         let mut low_qual_count: u64 = 0;
         for &q in qual {
-            if q < 53 { return true; }
-            if q < 63 { low_qual_count += 1; }
+            if q < 53 {
+                return true;
+            }
+            if q < 63 {
+                low_qual_count += 1;
+            }
         }
         low_qual_count > 2
     }
 
     fn fail_sequence_filter(seq: &[u8], pattern: &str) -> bool {
-        seq.iter().zip(pattern.bytes()).any(|(&b, p)| check_base_match(b, p))
+        seq.iter()
+            .zip(pattern.bytes())
+            .any(|(&b, p)| check_base_match(b, p))
     }
 
     fn process_barcode(seq: &[u8], is_revcomp: bool) -> String {
@@ -96,17 +89,12 @@ impl<'a, W> BarcodesIter<'a, W> {
     }
 }
 
-impl<'a, W> BarcodesIter<'a, W> 
+impl<'a, W> BarcodesIter<'a, W>
 where
     W: Write,
 {
     // Factory mathod
-    pub fn into_file(
-        inner: FastqReader, 
-        pos: &'a Position, 
-        pattern: &'a str, 
-        writer: W,
-    ) -> Self {
+    pub fn into_file(inner: FastqReader, pos: &'a Position, pattern: &'a str, writer: W) -> Self {
         Self::new(inner, pos, pattern, writer)
     }
 
@@ -136,7 +124,7 @@ where
             }
             if Self::fail_sequence_filter(seq, self.pattern) {
                 filter_seq_count += 1;
-                continue; 
+                continue;
             }
             if !seen_positions.insert(pos_key) {
                 filter_dup_count += 1;
@@ -144,7 +132,10 @@ where
             }
 
             let barcode = Self::process_barcode(seq, self.pos.is_revcomp());
-            buffer.push(format!("{}{}\t{}\t{}\t{}\n", lane, tile, x_pos, y_pos, barcode));
+            buffer.push(format!(
+                "{}{}\t{}\t{}\t{}\n",
+                lane, tile, x_pos, y_pos, barcode
+            ));
             if buffer.len() >= 1000 {
                 self.writer.write_all(buffer.concat().as_bytes())?;
                 buffer.clear();
@@ -154,59 +145,43 @@ where
             self.writer.write_all(buffer.concat().as_bytes())?;
         }
         self.writer.flush()?;
-        
-        Ok(Report::new(total_count, filter_qual_count, filter_seq_count, filter_dup_count))
+
+        Ok(Report::new(
+            total_count,
+            filter_qual_count,
+            filter_seq_count,
+            filter_dup_count,
+        ))
     }
 }
 
 impl<'a> BarcodesIter<'a, HashSet<String>> {
     pub fn into_set(
-        // tile_id: &'a str, 
-        inner: FastqReader, 
-        pos: &'a Position, 
-        pattern: &'a str, 
+        // tile_id: &'a str,
+        inner: FastqReader,
+        pos: &'a Position,
+        pattern: &'a str,
         writer: HashSet<String>,
     ) -> Self {
         Self::new(inner, pos, pattern, writer)
     }
 
     pub fn extract_sample_barcodes(mut self, capacity: usize) -> Result<HashSet<String>, AppError> {
-        let barcode_set = DashSet::new();
-        let capacity_reached = AtomicBool::new(false);
-        let unique_barcode_num = AtomicUsize::new(0);
-        
-        self.inner.records().par_bridge().try_for_each(
-            |rec| -> Result<(), AppError> {
-            if capacity_reached.load(Ordering::Relaxed) {
-                return Ok(());
-            }
-            
-            let rec = rec?;
-            
-            let (seq, qual) = (
-                &rec.seq[self.pos.range()],
-                &rec.qual[self.pos.range()],
-            );
-            
-            if Self::fail_quality_filter(qual) || Self::fail_sequence_filter(seq, self.pattern) {
-                return Ok(());
-            }
+        let mut barcode_set = HashSet::new();
+        let mut unique_barcode_num = 0;
 
-            if capacity_reached.load(Ordering::Relaxed) {
-                return Ok(());
-            }
-            
+        for rec in self.inner.records() {
+            let rec = rec?;
+            let seq = &rec.seq[self.pos.range()];
             let barcode = Self::process_barcode(seq, self.pos.is_revcomp());
-            
             if barcode_set.insert(barcode) {
-                let count = unique_barcode_num.fetch_add(1, Ordering::Relaxed) + 1;
-                if count >= capacity {
-                    capacity_reached.store(true, Ordering::Relaxed);
+                unique_barcode_num += 1;
+                if unique_barcode_num >= capacity {
+                    break;
                 }
             }
-            Ok(())
-        })?;
-        Ok(barcode_set.into_iter().take(capacity).collect())
+        }
+        Ok(barcode_set)
     }
 }
 
@@ -220,12 +195,17 @@ pub struct Report {
 impl Report {
     #[inline]
     fn new(
-        total_count: u64, 
-        filter_qual_count: u64, 
-        filter_seq_count: u64, 
-        filter_dup_count: u64
+        total_count: u64,
+        filter_qual_count: u64,
+        filter_seq_count: u64,
+        filter_dup_count: u64,
     ) -> Self {
-        Self { total_count, filter_qual_count, filter_seq_count, filter_dup_count }
+        Self {
+            total_count,
+            filter_qual_count,
+            filter_seq_count,
+            filter_dup_count,
+        }
     }
 
     #[inline]
@@ -253,4 +233,3 @@ impl std::fmt::Display for Report {
         )
     }
 }
-
