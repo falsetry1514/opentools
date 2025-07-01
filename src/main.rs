@@ -8,9 +8,8 @@ fn main() -> Result<(), AppError> {
     let cli = Cli::parse();
     
     match cli.command {
-        Commands::Fq2Bam(args) => run::fq2bam(args)?,
         Commands::TouchBarcode(args) => run::touchbarcode(args)?,
-        Commands::ViewBarcode(args) => run::viewbarcode(args)?,
+        Commands::ViewBarcode(args) => run::dedupbarcode(args)?,
         Commands::TilesMatch(args) => run::tilesmatch(args)?,
     }
     

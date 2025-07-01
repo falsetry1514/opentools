@@ -1,5 +1,6 @@
 use crate::argparse::{
-    dedupbarcode::DedupBarcodeArgs, fq2bam::Fq2BamArgs, tilesmatch::TilesMatchArgs,
+    dedupbarcode::DedupBarcodeArgs, 
+    tilesmatch::TilesMatchArgs,
     touchbarcode::TouchBarcodeArgs,
 };
 use crate::utils::error::AppError;
@@ -13,45 +14,6 @@ use std::{fs, process::Command};
 pub const DEFAULT_LINUX_THREADS: usize = 12;
 pub const DEFAULT_MAC_THREADS: usize = 3;
 
-/// Processes FASTQ to BAM conversion workflow
-/// 
-/// # Arguments
-/// - `args`: Fq2BamArgs struct containing input file paths and output configuration
-/// 
-/// # Errors
-/// Returns AppError for possible I/O errors or data format errors
-pub fn fq2bam(mut args: Fq2BamArgs) -> Result<(), AppError> {
-    args.validate_eq_file_count()?;
-    let config = args.record_config();
-    let mut stdout = args.create_bam_header();
-
-    for reader in args.paired_readers() {
-        let mut reader = reader?;
-        let (sender, receiver) = crossbeam::channel::bounded(4096);
-        let producer_handle = std::thread::spawn(move || {
-            reader
-                .records(config)
-                .par_bridge()
-                .try_for_each(|record| sender.send(record).map_err(|_| AppError::ChannelError))
-        });
-
-        crossbeam::scope(|s| {
-            s.spawn(|_| -> Result<(), AppError> {
-                for record in receiver.iter() {
-                    stdout.write(&record?)?;
-                }
-                Ok(())
-            })
-            .join()
-            .unwrap()
-        })
-        .unwrap()?;
-
-        producer_handle.join().unwrap()?;
-    }
-    Ok(())
-}
-
 /// Handles barcode viewing and deduplication
 ///
 /// # Arguments
@@ -59,7 +21,7 @@ pub fn fq2bam(mut args: Fq2BamArgs) -> Result<(), AppError> {
 ///
 /// # Errors
 /// Returns AppError for possible I/O errors or data processing errors
-pub fn viewbarcode(args: DedupBarcodeArgs) -> Result<(), AppError> {
+pub fn dedupbarcode(args: DedupBarcodeArgs) -> Result<(), AppError> {
     args.dedup()?;
     Ok(())
 }

@@ -78,7 +78,7 @@ impl DedupBarcodeArgs {
                     let tid = reader.tid(&tile_id.to_string())?;
                     reader.fetch(tid, 1000, 37100)?;
 
-                    writeln!(writer, "tile_id\tx_po\ty_pos\tbarcode")?;
+                    writeln!(writer, "tile_id\tx_pos\ty_pos\tbarcode")?;
                     for record in reader.records() {
                         let record = record?;
                         let record = unsafe { String::from_utf8_unchecked(record) };

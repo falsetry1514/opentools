@@ -1,12 +1,10 @@
 
-pub mod fq2bam;
 pub mod touchbarcode;
 pub mod dedupbarcode;
 pub mod tilesmatch;
 
 use clap::{Parser, Subcommand};
 use self::{
-    fq2bam::Fq2BamArgs,
     touchbarcode::TouchBarcodeArgs,
     dedupbarcode::DedupBarcodeArgs,
     tilesmatch::TilesMatchArgs,
@@ -30,8 +28,6 @@ pub struct Cli {
 /// Each variant corresponds to a specific tool function
 #[derive(Subcommand)]
 pub enum Commands {
-    #[clap(name="fq2bam")]
-    Fq2Bam(Fq2BamArgs),
     #[clap(name="touchbarcode")]
     TouchBarcode(TouchBarcodeArgs),
     #[clap(name="dedupbarcode")]
