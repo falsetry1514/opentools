@@ -2,6 +2,26 @@
 name = "opentools"
 version = "0.1.0"
 edition = "2024"
+authors = ["Falsetry <falsetryczz@gmail.com>"]
+license = "MIT"
+description = "A rust toolbox that replaces spacemake"
+repository = "https://github.com/falsetry1514/opentools"
+exclude = [
+    "src/binaries/*",
+    "src/postprecess/*",
+    "src/opentools.egg-info/*",
+    "src/*.py",
+    "tests/*",
+    "template.sh",
+    "*.py",
+    "*.md",
+    "pixi.*",
+    "MANIFEST.in",
+    "dist/*",
+    ".pixi/*",
+    "LICENSE",
+    "pyproject.toml"
+]
 
 [dependencies]
 clap = { version = "4.5.38", features = ["derive"] }
