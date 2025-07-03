@@ -5,7 +5,7 @@ edition = "2024"
 authors = ["Falsetry <falsetryczz@gmail.com>"]
 license = "MIT"
 description = "A rust toolbox that replaces spacemake"
-repository = "https://github.com/falsetry1514/opentools"
+repository = "https://github.com/falsetry1514/opentools.git"
 exclude = [
     "src/binaries/*",
     "src/postprecess/*",
@@ -20,7 +20,8 @@ exclude = [
     "dist/*",
     ".pixi/*",
     "LICENSE",
-    "pyproject.toml"
+    "pyproject.toml",
+    "target/*"
 ]
 
 [dependencies]

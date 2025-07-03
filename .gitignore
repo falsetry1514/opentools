@@ -1,18 +1,19 @@
 
 # pixi environments
-.pixi
-*.egg-info
+python/.pixi
+python/*.egg-info
+python/dist
+python/MANIFEST.in
 
 # build environments
 /tests
-/target
+target
+/rust/target
 .DS_Store
 
 # misc
 *.lock
-dist
+
 
 # test
 template.sh
-setup.py
-MANIFEST.in
