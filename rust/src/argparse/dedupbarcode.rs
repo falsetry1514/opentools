@@ -69,7 +69,7 @@ impl DedupBarcodeArgs {
         let producer_handle = std::thread::spawn(
             move || {
                 self.tile_list.par_iter().try_for_each(|&tile_id| {
-                    let tile_file = self.output_dir.join(format!("{tile_id}.txt"));
+                    let tile_file = self.output_dir.join(format!("{tile_id}.tsv"));
                     let mut writer = BufWriter::new(
                         fs::OpenOptions::new().create(true).write(true).open(tile_file)?
                     );
