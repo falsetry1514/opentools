@@ -78,16 +78,22 @@ impl DedupBarcodeArgs {
                     let tid = reader.tid(&tile_id.to_string())?;
                     reader.fetch(tid, 1000, 37100)?;
 
-                    writeln!(writer, "tile_id\tx_pos\ty_pos\tbarcode")?;
+                    writeln!(writer, "cell_bc\tx_pos\ty_pos")?;
                     for record in reader.records() {
                         let record = record?;
                         let record = unsafe { String::from_utf8_unchecked(record) };
-                        let barcode = record.splitn(4, '\t').nth(3).ok_or(AppError::IoError(
-                            io::Error::new(io::ErrorKind::InvalidData, "Invalid tile's barcode file format")
-                        ))?;
+                        let parts: Vec<&str> = record.splitn(4, '\t').collect();
+                        if parts.len() < 4 {
+                            return Err(AppError::IoError(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "Invalid tile's barcode file format",
+                            )));
+                        }
+                        let barcode = parts[3];
+                        let new_record = format!("{}\t{}\t{}", barcode, parts[1], parts[2]);
 
                         if barcode_set.insert(barcode.to_string()) {
-                            writeln!(writer, "{}", record)?;
+                            writeln!(writer, "{}", new_record)?;
                             sender.send((record.to_owned(), barcode.to_string())).map_err(|_| AppError::ChannelError)?;
                         }
                     }
