@@ -14,6 +14,11 @@ use rust_htslib::tbx::{self, Read};
 
 #[derive(Parser, Debug)]
 #[command(name = "dedupbarcode")]
+#[command(about = 
+    "Deduplicate barcodes among the given tiles id list", 
+    long_about = None
+)]
+#[command(next_line_help = true)]
 pub struct DedupBarcodeArgs {
     /// The path to the barcode file
     #[arg(

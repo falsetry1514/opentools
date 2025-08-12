@@ -6,13 +6,8 @@ use crate::argparse::{
 use crate::utils::error::AppError;
 
 use rayon::{ThreadPoolBuilder, prelude::*};
+use sysinfo::System;
 use std::{fs, process::Command};
-
-/// Default thread count configuration
-/// 
-/// Default: 12 threads for Linux, 3 threads for macOS
-pub const DEFAULT_LINUX_THREADS: usize = 12;
-pub const DEFAULT_MAC_THREADS: usize = 3;
 
 /// Handles barcode viewing and deduplication
 ///
@@ -50,12 +45,13 @@ pub fn touchbarcode(args: TouchBarcodeArgs) -> Result<(), AppError> {
     // Extract tile IDs
     let tile_ids = args.extract_tile_ids()?;
     println!("Extracted tile IDs from bcl directory RunInfo.xml file");
-    let num_threads: usize = if cfg!(target_os = "linux") {
-        DEFAULT_LINUX_THREADS
-    } else if cfg!(target_os = "macos") {
-        DEFAULT_MAC_THREADS
-    } else {
-        return Err(AppError::UnsupportedOS);
+    let num_threads: usize = {
+        let mut sys = System::new();
+        sys.refresh_memory();
+        let avail = sys.available_memory();
+        let usable = (avail * 4 / 5) as usize;
+        let cores = sys.cpus().len();
+        (usable / cores).max(1)
     };
 
     let pool = ThreadPoolBuilder::new()
@@ -155,15 +151,4 @@ pub fn tilesmatch(args: TilesMatchArgs) -> Result<(), AppError> {
         }
     });
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_default_thread_counts() {
-        assert_eq!(DEFAULT_LINUX_THREADS, 12);
-        assert_eq!(DEFAULT_MAC_THREADS, 3);
-    }
 }
