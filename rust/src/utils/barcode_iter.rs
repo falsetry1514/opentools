@@ -111,7 +111,7 @@ where
             let rec = rec?;
             total_count += 1;
             let (seq, qual) = (
-                self.pos.safe_slice(&rec.seq),
+                self.pos.safe_slice(&rec.seq) ,
                 self.pos.safe_slice(&rec.qual),
             );
             let id = rec.id().expect("Invalid record id");
