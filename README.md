@@ -18,5 +18,6 @@ Choose your preferred method:
 # If hasn't installed rust, please run command below
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-cargo run
+# install opentools binary file
+cargo install --registry crates-io opentools
 ```
