@@ -6,11 +6,17 @@ use crate::utils::{
     barcode_iter::{validate_absolute_filepath, BarcodesIter},
     error::AppError,
 };
+
 use std::io;
 use std::path::PathBuf;
 use std::collections::HashSet;
+
 use clap::{Parser, ValueEnum};
+
+use sysinfo::System;
+
 use rayon::prelude::*;
+
 use rust_htslib::tbx::{self, Read};
 
 pub fn is_valid_tile_id(value: &str) -> Result<u64, String> {
@@ -93,6 +99,10 @@ pub struct TilesMatchArgs {
     #[arg(long, default_value_t = 0.1)]
     threshold: f32,
 
+    /// The cores used for matching
+    #[arg(short,long)]
+    cores: Option<usize>,
+
     /// turn on it to output tile id that passed threshold.
     #[arg(short, long)]
     quiet: bool,
@@ -136,11 +146,21 @@ impl TilesMatchArgs {
             (None, None) => BarcodeMode::openst(),
             _ => unreachable!("clap parse the error is impossible.")
         };
+
         let tile_list = if let Some(list) = self.tile_list {
             list
         } else {
             // 直接返回预生成的常量数组
             VALID_TILE_IDS.to_vec()
+        };
+
+        let mut sys = System::new();
+        sys.refresh_cpu_all();
+        let upper_cores = sys.cpus().len().saturating_sub(2).max(1);
+
+        let n_core = match self.cores {
+            Some(n) => n.min(upper_cores),
+            None => upper_cores
         };
         
         Ok(InitTilesMatchArgs::new(
@@ -149,6 +169,7 @@ impl TilesMatchArgs {
             tile_list, 
             self.num_barcode, 
             self.threshold,
+            n_core,
             self.quiet,
             pos,
             pattern,
@@ -162,6 +183,7 @@ pub struct InitTilesMatchArgs {
     tile_list: Vec<u64>,
     num_barcode: usize,
     threshold: f32,
+    cores: usize,
     quiet: bool,
     pos: Position,
     pattern: String,
@@ -175,6 +197,7 @@ impl InitTilesMatchArgs {
         tile_list: Vec<u64>,
         num_barcode: usize,
         threshold: f32,
+        cores: usize,
         quiet: bool,
         pos: Position,
         pattern: String,
@@ -185,6 +208,7 @@ impl InitTilesMatchArgs {
             tile_list, 
             num_barcode, 
             threshold, 
+            cores,
             quiet,
             pos, 
             pattern 
@@ -193,6 +217,9 @@ impl InitTilesMatchArgs {
 
     #[inline]
     pub fn quiet(&self) -> bool { self.quiet }
+
+    #[inline]
+    pub fn cores(&self) -> usize { self.cores }
 
     pub fn create_barcode_iter(&self) -> Result<BarcodesIter<HashSet<String>>, AppError> {
         let inner: FastqReader = open(&self.read)?;
@@ -206,6 +233,8 @@ impl InitTilesMatchArgs {
 
     pub fn search_tile(&self) -> Result<Vec<TileMatchReport>, AppError> {
         let barcode_list = self.create_barcode_iter()?.extract_sample_barcodes(self.num_barcode)?;
+
+        
         self.tile_list.par_iter().map(
             |&tile_id| {
                 let mut chip_reader = tbx::Reader::from_path(&self.barcode_file)?;

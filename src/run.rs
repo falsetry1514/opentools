@@ -7,7 +7,6 @@ use crate::utils::error::AppError;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::{ThreadPoolBuilder, prelude::*};
-use sysinfo::System;
 use std::sync::{Arc, Mutex};
 use std::{fs, process::Command};
 use std::io::Write;
@@ -48,22 +47,11 @@ pub fn touchbarcode(args: TouchBarcodeArgs) -> Result<(), AppError> {
     // Extract tile IDs
     let mut tile_ids = args.extract_tile_ids()?;
     println!("Extracted tile IDs from bcl directory RunInfo.xml file");
-    let num_threads: usize = {
-        let mut sys = System::new();
-
-        sys.refresh_memory();
-        sys.refresh_cpu_usage();
-
-        let avail_gb = sys.available_memory() / 1024 / 1024 / 1024;
-        let usable = (avail_gb * 4 / 5 / 5) as usize;
-        let cores = sys.cpus().len().max(1);
-
-        usable.min(cores)
-    };
-    println!("Use {} threads for conversion", num_threads);
+    
+    println!("Use {} threads for conversion", args.cores());
 
     let pool = ThreadPoolBuilder::new()
-        .num_threads(num_threads)
+        .num_threads(args.cores())
         .build()
         .expect("Build thread pool failed");
 
@@ -109,7 +97,8 @@ pub fn touchbarcode(args: TouchBarcodeArgs) -> Result<(), AppError> {
         fs::OpenOptions::new().create(true).append(true).open(&log_path)?
     ));
 
-    tile_ids
+    pool.install(|| {
+        tile_ids
         .par_iter()
         .map(|tile_id| {
             let barcode_iter = args.create_barcode_iter(tile_id)?;
@@ -123,7 +112,8 @@ pub fn touchbarcode(args: TouchBarcodeArgs) -> Result<(), AppError> {
             pb.inc(1);
             Ok(())
         })
-        .collect::<Result<(), AppError>>()?;
+        .collect::<Result<(), AppError>>()
+    })?;
     pb.finish_with_message("Step 2: Barcode extraction completed! ✅");
     tile_ids.par_sort_unstable();
 
@@ -177,18 +167,28 @@ pub fn touchbarcode(args: TouchBarcodeArgs) -> Result<(), AppError> {
 /// Returns AppError for possible I/O errors or data processing errors
 pub fn tilesmatch(args: TilesMatchArgs) -> Result<(), AppError> {
     let args = args.init()?;
-    let reports = args.search_tile()?;
+
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(args.cores())
+        .build()
+        .expect("Build thread pool failed");
+
+    let reports = pool.install(|| args.search_tile())?;
+
     if !args.quiet() {
         println!("Tile id\tTotal number\tMatched number\tMatch ratio\tPass threshold")
     }
-    reports.into_iter().for_each(|report| {
-        if args.quiet() {
-            if report.pass_threshold() {
-                print!("{} ", report.tile_id());
+
+    pool.install(|| {
+        reports.into_iter().for_each(|report| {
+            if args.quiet() {
+                if report.pass_threshold() {
+                    print!("{} ", report.tile_id());
+                }
+            } else {
+                println!("{report}")
             }
-        } else {
-            println!("{report}")
-        }
+        })
     });
     Ok(())
 }

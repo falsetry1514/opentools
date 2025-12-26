@@ -6,9 +6,15 @@ use crate::utils::{
     error::AppError,
 };
 
-use std::{fs, io::{self, BufWriter, Write}, process::Command};
+use std::fs;
+use std::io::{self, BufWriter, Write};
+use std::process::Command;
 use std::path::{PathBuf, Path};
+
+use sysinfo::System;
+
 use regex::Regex;
+
 use clap::{Parser, ValueEnum};
 
 pub fn validate_barcode_pattern(s: &str) -> Result<String, String> {
@@ -40,6 +46,10 @@ pub struct TouchBarcodeArgs {
     /// Path to output directory
     #[arg(short, long, required = true, value_parser = validate_absolute_dirpath)]
     output: PathBuf,
+
+    /// The cores used for running
+    #[arg(short,long)]
+    cores: Option<usize>,
 
     /// barcode parsing mode
     #[arg(short, long, value_enum, default_value_t = BarcodeMode::Openst)]
@@ -84,13 +94,24 @@ impl TouchBarcodeArgs {
             (None, None) => BarcodeMode::openst(),
             _ => unreachable!("clap parse the error is impossible.")
         };
-        InitTouchBarcodeArgs::new(self.bcl_dir, self.output, self.fastqc, pos, pattern)
+
+        let mut sys = System::new();
+        sys.refresh_cpu_all();
+        let upper_cores = sys.cpus().len().saturating_sub(2).max(1);
+
+        let n_core = match self.cores {
+            Some(n) => n.min(upper_cores),
+            None => upper_cores
+        };
+
+        InitTouchBarcodeArgs::new(self.bcl_dir, self.output, n_core, self.fastqc, pos, pattern)
     }
 }
 
 pub struct InitTouchBarcodeArgs {
     bcl_dir: PathBuf,
     output: PathBuf,
+    cores: usize,
     fastqc: bool,
     pos: Position,
     pattern: String,
@@ -101,6 +122,7 @@ impl InitTouchBarcodeArgs {
     fn new(
         bcl_dir: PathBuf, 
         output: PathBuf, 
+        cores: usize,
         fastqc: bool, 
         pos: Position, 
         pattern: String
@@ -108,6 +130,7 @@ impl InitTouchBarcodeArgs {
         Self {
             bcl_dir,
             output,
+            cores,
             fastqc,
             pos,
             pattern
@@ -119,6 +142,9 @@ impl InitTouchBarcodeArgs {
 
     #[inline]
     pub fn output(&self) -> &Path { &self.output.as_path() }
+
+    #[inline]
+    pub fn cores(&self) -> usize { self.cores }
 
     #[inline]
     fn pos(&self) -> &Position { &self.pos }
