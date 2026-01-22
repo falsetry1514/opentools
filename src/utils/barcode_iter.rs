@@ -1,20 +1,19 @@
-use super::{
+use crate::argparse::touchbarcode::TouchBarcodeReport;
+use crate::utils::{
     error::AppError,
-    fastqfile::{FastqReader, check_base_match, complement},
     position::Position,
 };
-use seq_io::fastq::Record;
+use seq_io::fastq::{ Record, Reader};
 use std::collections::HashSet;
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::io::{ self, Write, Read };
+use std::path::{ Path, PathBuf };
 
 pub fn validate_absolute_dirpath(s: &str) -> io::Result<PathBuf> {
     let mut path = Path::new(s).to_path_buf();
     if !path.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotADirectory,
-            format!("{} is not a directory", s),
-        ));
+        return Err(
+            io::Error::new(io::ErrorKind::NotADirectory, format!("{} is not a directory", s))
+        );
     }
     if path.is_relative() {
         path = path.canonicalize()?;
@@ -25,36 +24,259 @@ pub fn validate_absolute_dirpath(s: &str) -> io::Result<PathBuf> {
 pub fn validate_absolute_filepath(s: &str) -> io::Result<PathBuf> {
     let path = Path::new(s).to_path_buf();
     if !path.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{} is not a file", s),
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("{} is not a file", s)));
     }
     Ok(path)
 }
 
-pub struct BarcodesIter<'a, W> {
-    inner: FastqReader,
-    pos: &'a Position,
-    pattern: &'a str,
-    writer: W,
+fn complement(b: &u8) -> u8 {
+    match b {
+        b'A' => b'T',
+        b'T' => b'A',
+        b'G' => b'C',
+        b'C' => b'G',
+        b'N' => b'N',
+        _ => unreachable!("Invalid base: {b}"),
+    }
 }
 
-impl<'a, W> BarcodesIter<'a, W> {
+pub fn check_base_match(base: u8, pattern_char: u8) -> bool {
+    // 碱基匹配
+    match (base, pattern_char) {
+        (b'N', _) => true,
+        (b'A', b'A' | b'R' | b'M' | b'W' | b'H' | b'V' | b'D' | b'N') => false,
+        (b'T', b'T' | b'Y' | b'K' | b'W' | b'H' | b'B' | b'D' | b'N') => false,
+        (b'G', b'G' | b'R' | b'K' | b'S' | b'B' | b'V' | b'D' | b'N') => false,
+        (b'C', b'C' | b'Y' | b'M' | b'S' | b'H' | b'B' | b'V' | b'N') => false,
+        _ => true,
+    }
+}
+
+fn parse_id(id: &str) -> (&str, &str, &str, &str) {
+    let mut parts = id.splitn(7, ':');
+    match (parts.nth(3), parts.next(), parts.next(), parts.next()) {
+        (Some(l), Some(t), Some(x), Some(y)) => (l, t, x, y),
+        _ => unreachable!("Invalid fastq id occurs!"),
+    }
+}
+
+pub fn process_sequence(seq: &[u8], revcomp: bool) -> String {
+    let seq = if revcomp {
+        seq.iter().rev().map(complement).collect()
+    } else {
+        seq.to_vec()
+    };
+    unsafe { String::from_utf8_unchecked(seq) }
+}
+
+pub struct BarcodesIter<'a, R: Read> {
+    inner: Reader<R>,
+    pos: &'a Position,
+    pattern: &'a str,
+}
+
+impl<'a, R: Read> BarcodesIter<'a, R> {
     // Factory mathod
-    pub fn new(inner: FastqReader, pos: &'a Position, pattern: &'a str, writer: W) -> Self {
+    #[inline]
+    pub fn new(inner: Reader<R>, pos: &'a Position, pattern: &'a str) -> Self {
         Self {
             inner,
             pos,
             pattern,
-            writer,
         }
     }
 
+    #[inline]
+    pub fn pos(&self) -> &Position {
+        &self.pos
+    }
+
+    pub fn inner(&mut self) -> &mut Reader<R> {
+        &mut self.inner
+    }
+
+    fn for_each_barcode<F>(
+        inner: &mut Reader<R>,
+        pos: &Position,
+        mut f: F
+    ) -> Result<(), AppError>
+        where F: FnMut(BarcodeRecord) -> Result<(), AppError>
+    {
+        for rec in inner.records() {
+            let rec = rec?;
+            let id = rec.id().expect("Invalid record id");
+            let seq = pos.safe_slice(&rec.seq);
+            let qual = pos.safe_slice(&rec.qual);
+            let (lane, tile, x_pos, y_pos) = parse_id(id);
+            f(BarcodeRecord::new(seq, qual, lane, tile, x_pos, y_pos, pos.is_revcomp()))?;
+        }
+        Ok(())
+    }
+
+    // Public method
+    pub fn extract_chip_barcodes<W: Write>(mut self, mut writer: W) -> Result<TouchBarcodeReport, AppError> {
+        let mut seen_positions = HashSet::new();
+        let mut buffer = Vec::with_capacity(1000);
+
+        let mut total_count: u64 = 0;
+        let mut filter_seq_count: u64 = 0;
+        let mut filter_qual_count: u64 = 0;
+        let mut filter_dup_count: u64 = 0;
+
+        Self::for_each_barcode(&mut self.inner, self.pos, |br| {
+            total_count += 1;
+            let pos_key = (br.x_pos().to_string(), br.y_pos().to_string());
+
+            if br.fail_quality_filter() {
+                filter_qual_count += 1;
+                return Ok(());
+            }
+            if br.fail_sequence_filter(self.pattern) {
+                filter_seq_count += 1;
+                return Ok(());
+            }
+            if !seen_positions.insert(pos_key) {
+                filter_dup_count += 1;
+                return Ok(());
+            }
+
+            let seq = unsafe { String::from_utf8_unchecked(br.seq().to_owned()) };
+
+            buffer.push(
+                format!("{}{}\t{}\t{}\t{}\n", br.lane(), br.tile(), br.x_pos(), br.y_pos(), seq)
+            );
+
+            if buffer.len() >= 1000 {
+                for line in &buffer {
+                    writer.write_all(line.as_bytes())?;
+                }
+                buffer.clear();
+            }
+
+            Ok(())
+        })?;
+
+        if !buffer.is_empty() {
+            for line in &buffer {
+                writer.write_all(line.as_bytes())?;
+            }
+        }
+        writer.flush()?;
+
+        Ok(TouchBarcodeReport::new(total_count, filter_qual_count, filter_seq_count, filter_dup_count))
+    }
+
+    pub fn extract_sample_barcodes(mut self, capacity: usize) -> Result<HashSet<String>, AppError> {
+        let mut barcode_set = HashSet::new();
+        let mut unique_barcode_num = 0;
+
+        Self::for_each_barcode(&mut self.inner, self.pos, |br| {
+            if barcode_set.insert(br.process_sequence()) {
+                unique_barcode_num += 1;
+                if capacity != 0 && unique_barcode_num >= capacity {
+                    // 直接提前终止
+                    return Err(AppError::EarlyStop);
+                }
+            }
+            Ok(())
+        }).or_else(|e| {
+            if matches!(e, AppError::EarlyStop) { Ok(()) } else { Err(e) }
+        })?;
+
+        Ok(barcode_set)
+    }
+}
+
+impl<'a, R: Read> Iterator for BarcodesIter<'a, R> {
+    type Item = Result<String, AppError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let rec = match self.inner.next() {
+            Some(Ok(bc)) => bc.to_owned_record(),
+            Some(Err(e)) => return Some(Err(e.into())),
+            None => return None,
+        };
+
+        let id = rec.id().expect("Invalid record id");
+        let (lane, tile, x_pos, y_pos) = parse_id(id);
+
+        let barcode = BarcodeRecord::new(&rec.seq, &rec.qual, lane, tile, x_pos, y_pos, false).process_sequence();
+
+        Some(Ok(barcode))
+    }
+}
+
+pub struct BarcodeRecord<'a> {
+    seq: &'a [u8],
+    qual: &'a [u8],
+    lane: &'a str,
+    tile: &'a str,
+    x: &'a str,
+    y: &'a str,
+    revcomp: bool,
+}
+
+impl<'a> BarcodeRecord<'a> {
+    #[inline]
+    pub fn new(
+        seq: &'a [u8],
+        qual: &'a [u8],
+        lane: &'a str,
+        tile: &'a str,
+        x: &'a str,
+        y: &'a str,
+        revcomp: bool
+    ) -> Self {
+        Self {
+            seq,
+            qual,
+            lane,
+            tile,
+            x,
+            y,
+            revcomp,
+        }
+    }
+
+    #[inline]
+    pub fn seq(&self) -> &[u8] {
+        self.seq
+    }
+
+    #[inline]
+    pub fn qual(&self) -> &[u8] {
+        self.qual
+    }
+
+    #[inline]
+    pub fn lane(&self) -> &str {
+        self.lane
+    }
+
+    #[inline]
+    pub fn tile(&self) -> &str {
+        self.tile
+    }
+
+    #[inline]
+    pub fn x_pos(&self) -> &str {
+        self.x
+    }
+
+    #[inline]
+    pub fn y_pos(&self) -> &str {
+        self.y
+    }
+
+    #[inline]
+    pub fn revcomp(&self) -> bool {
+        self.revcomp
+    }
+
     // Associated method
-    fn fail_quality_filter(qual: &[u8]) -> bool {
+    pub fn fail_quality_filter(&self) -> bool {
         let mut low_qual_count: u64 = 0;
-        for &q in qual {
+        for &q in self.qual {
             if q < 53 {
                 return true;
             }
@@ -65,171 +287,21 @@ impl<'a, W> BarcodesIter<'a, W> {
         low_qual_count > 2
     }
 
-    fn fail_sequence_filter(seq: &[u8], pattern: &str) -> bool {
-        seq.iter()
+    pub fn fail_sequence_filter(&self, pattern: &str) -> bool {
+        self.seq
+            .iter()
             .zip(pattern.bytes())
             .any(|(&b, p)| check_base_match(b, p))
     }
 
-    fn process_barcode(seq: &[u8], is_revcomp: bool) -> String {
-        let barcode: Vec<u8> = if is_revcomp {
-            seq.iter().rev().map(complement).collect()
+    pub fn process_sequence(&self) -> String {
+        let seq = if self.revcomp {
+            self.seq.iter().rev().map(complement).collect()
         } else {
-            seq.to_vec()
+            self.seq.to_vec()
         };
-        unsafe { String::from_utf8_unchecked(barcode) }
-    }
-
-    fn parse_id(id: &str) -> (&str, &str, &str, &str) {
-        let mut parts = id.splitn(7, ':');
-        match (parts.nth(3), parts.next(), parts.next(), parts.next()) {
-            (Some(l), Some(t), Some(x), Some(y)) => (l, t, x, y),
-            _ => unreachable!("Invalid fastq id occurs!"),
-        }
+        unsafe { String::from_utf8_unchecked(seq) }
     }
 }
 
-impl<'a, W> BarcodesIter<'a, W>
-where
-    W: Write,
-{
-    // Factory mathod
-    pub fn into_file(inner: FastqReader, pos: &'a Position, pattern: &'a str, writer: W) -> Self {
-        Self::new(inner, pos, pattern, writer)
-    }
 
-    // Public method
-    pub fn extract_chip_barcodes(mut self) -> Result<Report, AppError> {
-        let mut seen_positions = HashSet::new();
-        let mut buffer = Vec::with_capacity(1000);
-
-        let mut total_count: u64 = 0;
-        let mut filter_seq_count: u64 = 0;
-        let mut filter_qual_count: u64 = 0;
-        let mut filter_dup_count: u64 = 0;
-        for rec in self.inner.records() {
-            let rec = rec?;
-            total_count += 1;
-            let (seq, qual) = (
-                self.pos.safe_slice(&rec.seq) ,
-                self.pos.safe_slice(&rec.qual),
-            );
-            let id = rec.id().expect("Invalid record id");
-            let (lane, tile, x_pos, y_pos) = Self::parse_id(id);
-            let pos_key = (x_pos.to_string(), y_pos.to_string());
-
-            if Self::fail_quality_filter(qual) {
-                filter_qual_count += 1;
-                continue;
-            }
-            if Self::fail_sequence_filter(seq, self.pattern) {
-                filter_seq_count += 1;
-                continue;
-            }
-            if !seen_positions.insert(pos_key) {
-                filter_dup_count += 1;
-                continue;
-            }
-
-            let barcode = Self::process_barcode(seq, self.pos.is_revcomp());
-            buffer.push(format!(
-                "{}{}\t{}\t{}\t{}\n",
-                lane, tile, x_pos, y_pos, barcode
-            ));
-            if buffer.len() >= 1000 {
-                self.writer.write_all(buffer.concat().as_bytes())?;
-                buffer.clear();
-            }
-        }
-        if !buffer.is_empty() {
-            self.writer.write_all(buffer.concat().as_bytes())?;
-        }
-        self.writer.flush()?;
-
-        Ok(Report::new(
-            total_count,
-            filter_qual_count,
-            filter_seq_count,
-            filter_dup_count,
-        ))
-    }
-}
-
-impl<'a> BarcodesIter<'a, HashSet<String>> {
-    pub fn into_set(
-        // tile_id: &'a str,
-        inner: FastqReader,
-        pos: &'a Position,
-        pattern: &'a str,
-        writer: HashSet<String>,
-    ) -> Self {
-        Self::new(inner, pos, pattern, writer)
-    }
-
-    pub fn extract_sample_barcodes(mut self, capacity: usize) -> Result<HashSet<String>, AppError> {
-        let mut barcode_set = HashSet::new();
-        let mut unique_barcode_num = 0;
-
-        for rec in self.inner.records() {
-            let rec = rec?;
-            let seq = &rec.seq[self.pos.range()];
-            let barcode = Self::process_barcode(seq, self.pos.is_revcomp());
-            if barcode_set.insert(barcode) {
-                unique_barcode_num += 1;
-                if unique_barcode_num >= capacity {
-                    break;
-                }
-            }
-        }
-        Ok(barcode_set)
-    }
-}
-
-pub struct Report {
-    total_count: u64,
-    filter_qual_count: u64,
-    filter_seq_count: u64,
-    filter_dup_count: u64,
-}
-
-impl Report {
-    #[inline]
-    fn new(
-        total_count: u64,
-        filter_qual_count: u64,
-        filter_seq_count: u64,
-        filter_dup_count: u64,
-    ) -> Self {
-        Self {
-            total_count,
-            filter_qual_count,
-            filter_seq_count,
-            filter_dup_count,
-        }
-    }
-
-    #[inline]
-    fn filtered_count(&self) -> u64 {
-        self.filter_qual_count + self.filter_seq_count + self.filter_dup_count
-    }
-
-    #[inline]
-    fn passed_count(&self) -> u64 {
-        self.total_count - self.filtered_count()
-    }
-}
-
-impl std::fmt::Display for Report {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Total={}, Filtered={} (Qual={}, Seq={}, Dup={}), Passed={}",
-            self.total_count,
-            self.filtered_count(),
-            self.filter_qual_count,
-            self.filter_seq_count,
-            self.filter_dup_count,
-            self.passed_count()
-        )
-    }
-}

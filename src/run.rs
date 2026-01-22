@@ -1,14 +1,15 @@
+use crate::argparse::demux_i2::DemuxI2Args;
 use crate::argparse::{
-    dedupbarcode::DedupBarcodeArgs, 
+    dedupbarcode::DedupBarcodeArgs,
     tilesmatch::TilesMatchArgs,
     touchbarcode::TouchBarcodeArgs,
 };
 use crate::utils::error::AppError;
 
-use indicatif::{ProgressBar, ProgressStyle};
-use rayon::{ThreadPoolBuilder, prelude::*};
-use std::sync::{Arc, Mutex};
-use std::{fs, process::Command};
+use indicatif::{ ProgressBar, ProgressStyle };
+use rayon::{ ThreadPoolBuilder, prelude::* };
+use std::sync::{ Arc, Mutex };
+use std::{ fs, process::Command };
 use std::io::Write;
 
 /// Handles barcode viewing and deduplication
@@ -31,7 +32,7 @@ pub fn dedupbarcode(args: DedupBarcodeArgs) -> Result<(), AppError> {
 /// # Errors
 /// Returns AppError for possible I/O errors, system command not found, or execution failure
 pub fn touchbarcode(args: TouchBarcodeArgs) -> Result<(), AppError> {
-    let args = args.init();
+    let args = args.init()?;
     args.validate_command()?;
 
     // Create output directories
@@ -47,7 +48,7 @@ pub fn touchbarcode(args: TouchBarcodeArgs) -> Result<(), AppError> {
     // Extract tile IDs
     let mut tile_ids = args.extract_tile_ids()?;
     println!("Extracted tile IDs from bcl directory RunInfo.xml file");
-    
+
     println!("Use {} threads for conversion", args.cores());
 
     let pool = ThreadPoolBuilder::new()
@@ -58,9 +59,11 @@ pub fn touchbarcode(args: TouchBarcodeArgs) -> Result<(), AppError> {
     let pb = ProgressBar::new(tile_ids.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("{prefix:.bold.dim} {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({eta})")
+            .template(
+                "{prefix:.bold.dim} {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({eta})"
+            )
             .unwrap()
-            .progress_chars("#>-"),
+            .progress_chars("#>-")
     );
     pb.set_prefix("BCL→FASTQ Conversion");
 
@@ -68,9 +71,7 @@ pub fn touchbarcode(args: TouchBarcodeArgs) -> Result<(), AppError> {
         tile_ids
             .par_iter()
             .map(|tile_id| {
-                let fastq_file = args
-                    .fastq_path(tile_id)
-                    .join("Undetermined_S0_R1_001.fastq.gz");
+                let fastq_file = args.fastq_path(tile_id).join("Undetermined_S0_R1_001.fastq.gz");
 
                 if !fastq_file.exists() {
                     args.convert_bcl_into_tile(tile_id)?;
@@ -86,61 +87,61 @@ pub fn touchbarcode(args: TouchBarcodeArgs) -> Result<(), AppError> {
     let pb = ProgressBar::new(tile_ids.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("{prefix:.bold.dim} {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({eta})")
+            .template(
+                "{prefix:.bold.dim} {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({eta})"
+            )
             .unwrap()
-            .progress_chars("#>-"),
+            .progress_chars("#>-")
     );
     pb.set_prefix("Extracting barcodes");
 
     let log_path = args.output().join("touchbarcode.log");
-    let log_file = Arc::new(Mutex::new(
-        fs::OpenOptions::new().create(true).append(true).open(&log_path)?
-    ));
+    let log_file = Arc::new(
+        Mutex::new(fs::OpenOptions::new().create(true).append(true).open(&log_path)?)
+    );
 
     pool.install(|| {
         tile_ids
-        .par_iter()
-        .map(|tile_id| {
-            let barcode_iter = args.create_barcode_iter(tile_id)?;
-            let report = barcode_iter.extract_chip_barcodes()?;
+            .par_iter()
+            .map(|tile_id| {
+                let barcode_iter = args.create_barcode_iter(tile_id)?;
+                let report = barcode_iter.extract_chip_barcodes(args.render_writer(tile_id)?)?;
 
-            {
-                let mut file = log_file.lock().unwrap();
-                writeln!(file, "Tile {tile_id}: {report}")?;
-            }
+                {
+                    let mut file = log_file.lock().unwrap();
+                    writeln!(file, "Tile {tile_id}: {report}")?;
+                }
 
-            pb.inc(1);
-            Ok(())
-        })
-        .collect::<Result<(), AppError>>()
+                pb.inc(1);
+                Ok(())
+            })
+            .collect::<Result<(), AppError>>()
     })?;
     pb.finish_with_message("Step 2: Barcode extraction completed! ✅");
     tile_ids.par_sort_unstable();
 
     let files: Vec<String> = tile_ids
         .iter()
-        .map(|tile_id| {
-            args.output()
-                .join(format!("tmp/{tile_id}.txt"))
-                .display()
-                .to_string()
-        })
+        .map(|tile_id| { args.output().join(format!("tmp/{tile_id}.txt")).display().to_string() })
         .collect();
     let output_path = args.output().join("barcodes.txt.gz");
 
     let output = Command::new("bash")
         .arg("-c")
-        .arg(&format!(
-            "{{ echo '#tile_id\tx_pos\ty_pos\tbarcode'; cat {}; }} | bgzip -@ $(nproc) > {}",
-            files.join(" "),
-            output_path.display()
-        ))
+        .arg(
+            &format!(
+                "{{ echo '#tile_id\tx_pos\ty_pos\tbarcode'; cat {}; }} | bgzip -@ $(nproc) > {}",
+                files.join(" "),
+                output_path.display()
+            )
+        )
         .output()?;
     if !output.status.success() {
-        return Err(AppError::CommandError(format!(
-            "bgzip run failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
+        return Err(
+            AppError::CommandError(
+                format!("bgzip run failed: {}", String::from_utf8_lossy(&output.stderr))
+            )
+        );
     }
     println!("Barcodes written to: {}", output_path.display());
     if tmp_dir.exists() {
@@ -168,27 +169,27 @@ pub fn touchbarcode(args: TouchBarcodeArgs) -> Result<(), AppError> {
 pub fn tilesmatch(args: TilesMatchArgs) -> Result<(), AppError> {
     let args = args.init()?;
 
-    let pool = ThreadPoolBuilder::new()
-        .num_threads(args.cores())
-        .build()
-        .expect("Build thread pool failed");
-
-    let reports = pool.install(|| args.search_tile())?;
+    let reports = args.search_tile()?;
 
     if !args.quiet() {
-        println!("Tile id\tTotal number\tMatched number\tMatch ratio\tPass threshold")
+        println!("Tile id\tTotal number\tMatched number\tMatch ratio\tPass threshold");
     }
 
-    pool.install(|| {
-        reports.into_iter().for_each(|report| {
-            if args.quiet() {
-                if report.pass_threshold() {
-                    print!("{} ", report.tile_id());
-                }
-            } else {
-                println!("{report}")
+    reports.into_iter().for_each(|report| {
+        if args.quiet() {
+            if report.pass_threshold() {
+                print!("{} ", report.tile_id());
             }
-        })
+        } else {
+            println!("{report}")
+        }
     });
+
+    Ok(())
+}
+
+pub fn demux_i2(args: DemuxI2Args) -> Result<(), AppError> {
+    let args = args.init()?;
+    args.run_demux()?;
     Ok(())
 }

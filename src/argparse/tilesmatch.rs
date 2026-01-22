@@ -1,106 +1,58 @@
-
-use crate::argparse::touchbarcode::{validate_barcode_pattern};
-use crate::utils::{
-    fastqfile::{open, FastqReader},
-    position::Position,
-    barcode_iter::{validate_absolute_filepath, BarcodesIter},
-    error::AppError,
-};
-
-use std::io;
+// ------------------
+// 1. std
+// ------------------
+use std::{ io, usize };
 use std::path::PathBuf;
 use std::collections::HashSet;
 
-use clap::{Parser, ValueEnum};
-
+// ------------------
+// 2. external crates
+// ------------------
+use clap::Parser;
 use sysinfo::System;
+use rayon::{ ThreadPoolBuilder, prelude::* };
+use rust_htslib::tbx::{ Reader as TbxReader, Read };
 
-use rayon::prelude::*;
-
-use rust_htslib::tbx::{self, Read};
-
-pub fn is_valid_tile_id(value: &str) -> Result<u64, String> {
-    let tile_id: u64 = value.parse()
-        .map_err(|_| format!("`{}` is not valid integer", value))?;
-    
-    if VALID_TILE_IDS.contains(&tile_id) {
-        Ok(tile_id)
-    } else {
-        Err(format!("tile_id {} is not in the valid range (valid range: 11101-42678)", tile_id))
-    }
-}
-
-const VALID_TILE_IDS: [u64; 3744] = {
-    // Array size: 4 × 2 × 6 × 78 = 3744
-    let mut result = [0u64; 3744];
-    let mut index = 0;
-    
-    let mut a = 1;
-    while a <= 4 {
-        let mut b = 1;
-        while b <= 2 {
-            let mut c = 1;
-            while c <= 6 {
-                let mut d = 1;
-                while d <= 78 {
-                    result[index] = a * 10000 + b * 1000 + c * 100 + d;
-                    index += 1;
-                    d += 1;
-                }
-                c += 1;
-            }
-            b += 1;
-        }
-        a += 1;
-    }
-    result
+// ------------------
+// 3. inner crate
+// ------------------
+use crate::utils::{
+    barcode_config::{ BarcodeMode, OpenstContext, validate_barcode_pattern },
+    barcode_iter::{ validate_absolute_filepath, BarcodesIter },
+    fastq_iter::open,
+    position::Position,
+    error::AppError,
+    tile_ids::{ is_valid_tile_id, VALID_TILE_IDS },
 };
 
 /// supported raw fastq.gz file or bam file
 #[derive(Parser, Debug)]
 #[command(name = "tilesmatch")]
-#[command(about = 
-    "Search for each tile that match the threshold", 
-    long_about = None
-)]
+#[command(about = "Search for each tile that match the threshold", long_about = None)]
 #[command(next_line_help = true)]
 pub struct TilesMatchArgs {
     /// Generally Read1 fastq file
-    #[arg(
-        short = 'R', 
-        long, 
-        required = true,
-    )]
+    #[arg(short = 'R', long, required = true)]
     read: PathBuf,
 
     /// The path to the barcode file
-    #[arg(
-        short = 'I', 
-        long, 
-        required = true, 
-        value_parser = validate_absolute_filepath,
-    )]
+    #[arg(short = 'I', long, required = true, value_parser = validate_absolute_filepath)]
     barcode_file: PathBuf,
 
     /// the tile id list to query
-    #[arg(
-        long, 
-        value_delimiter = ' ',
-        num_args = 1..,
-        value_parser = is_valid_tile_id,
-    )]
+    #[arg(long, value_delimiter = ' ', num_args = 1.., value_parser = is_valid_tile_id)]
     tile_list: Option<Vec<u64>>,
 
-    /// the number of barcodes used to query
+    /// the number of barcodes used to query; 0 for unlimited
     #[arg(short, long, default_value_t = 100_000_000)]
     num_barcode: usize,
 
     /// the threshold to filter tile
-    #[arg(long, default_value_t = 0.1)]
+    #[arg(short = 'M', long, default_value_t = 0.1)]
     threshold: f32,
 
     /// The cores used for matching
-    #[arg(short,long)]
+    #[arg(short = '@', long)]
     cores: Option<usize>,
 
     /// turn on it to output tile id that passed threshold.
@@ -112,29 +64,29 @@ pub struct TilesMatchArgs {
     mode: BarcodeMode,
 
     /// Custom barcode position (only effective when mode=custom)
-    /// 
-    /// Format: "read{1/2}:{+/-}:start-end" 
-    /// 
+    ///
+    /// Format: "read{1/2}:{+/-}:start-end"
+    ///
     /// (e.g. "read1:+:1-16" or "read2:-:20-end")
     #[arg(
-        long, 
-        required_if_eq("mode", "custom"), 
+        long,
+        required_if_eq("mode", "custom"),
         value_parser = clap::value_parser!(Position),
-        value_name = "BARCODE_POS",
+        value_name = "BARCODE_POS"
     )]
     barcode_pos: Option<Position>,
 
     /// Custom barcode pattern (only effective when mode=custom)
-    /// 
+    ///
     /// Regex: ^[ATGCNRYMKSWHBVD]+$
-    /// 
+    ///
     /// there should only be the pattern before convert sequence into reverse complement sequence.
     /// (e.g. openst-barcode: VNBVNNVNNVNNVNNVNNVNNVNNVNNN, openst-seq: NNNBNNBNNBNNBNNBNNBNNBNNBVNB)
     #[arg(
-        long, 
-        required_if_eq("mode", "custom"), 
+        long,
+        required_if_eq("mode", "custom"),
         value_parser = validate_barcode_pattern,
-        value_name = "BARCODE_PATTERN",
+        value_name = "BARCODE_PATTERN"
     )]
     barcode_pattern: Option<String>,
 }
@@ -143,37 +95,37 @@ impl TilesMatchArgs {
     pub fn init(self) -> Result<InitTilesMatchArgs, AppError> {
         let (pos, pattern) = match (self.barcode_pos, self.barcode_pattern) {
             (Some(pos), Some(pattern)) => (pos, pattern),
-            (None, None) => BarcodeMode::openst(),
-            _ => unreachable!("clap parse the error is impossible.")
+            (None, None) => BarcodeMode::openst(OpenstContext::Tile),
+            _ => unreachable!("clap parse the error is impossible."),
         };
 
         let tile_list = if let Some(list) = self.tile_list {
             list
         } else {
-            // 直接返回预生成的常量数组
             VALID_TILE_IDS.to_vec()
         };
 
-        let mut sys = System::new();
-        sys.refresh_cpu_all();
-        let upper_cores = sys.cpus().len().saturating_sub(2).max(1);
-
-        let n_core = match self.cores {
-            Some(n) => n.min(upper_cores),
-            None => upper_cores
+        let upper_cores = {
+            let mut sys = System::new();
+            sys.refresh_cpu_all();
+            sys.cpus().len().saturating_sub(2).max(1)
         };
-        
-        Ok(InitTilesMatchArgs::new(
-            self.read, 
-            self.barcode_file, 
-            tile_list, 
-            self.num_barcode, 
-            self.threshold,
-            n_core,
-            self.quiet,
-            pos,
-            pattern,
-        ))
+
+        let n_core = self.cores.unwrap_or(upper_cores).min(upper_cores);
+
+        Ok(
+            InitTilesMatchArgs::new(
+                self.read,
+                self.barcode_file,
+                tile_list,
+                self.num_barcode,
+                self.threshold,
+                n_core,
+                self.quiet,
+                pos,
+                pattern
+            )
+        )
     }
 }
 
@@ -200,87 +152,95 @@ impl InitTilesMatchArgs {
         cores: usize,
         quiet: bool,
         pos: Position,
-        pattern: String,
+        pattern: String
     ) -> Self {
-        Self { 
-            read, 
-            barcode_file, 
-            tile_list, 
-            num_barcode, 
-            threshold, 
+        Self {
+            read,
+            barcode_file,
+            tile_list,
+            num_barcode,
+            threshold,
             cores,
             quiet,
-            pos, 
-            pattern 
+            pos,
+            pattern,
         }
     }
 
     #[inline]
-    pub fn quiet(&self) -> bool { self.quiet }
+    pub fn quiet(&self) -> bool {
+        self.quiet
+    }
 
     #[inline]
-    pub fn cores(&self) -> usize { self.cores }
+    pub fn cores(&self) -> usize {
+        self.cores
+    }
 
-    pub fn create_barcode_iter(&self) -> Result<BarcodesIter<HashSet<String>>, AppError> {
-        let inner: FastqReader = open(&self.read)?;
-        Ok(BarcodesIter::into_set(
-            inner, 
-            &self.pos, 
-            &self.pattern, 
-            HashSet::with_capacity(self.num_barcode)
-        ))
+    pub fn create_barcode_iter(&self) -> Result<BarcodesIter<impl std::io::Read>, AppError> {
+
+        let inner = open(&self.read)?;
+        // HashSet::with_capacity(self.num_barcode)
+        Ok(
+            BarcodesIter::new(
+                inner,
+                &self.pos,
+                &self.pattern,
+            )
+        )
     }
 
     pub fn search_tile(&self) -> Result<Vec<TileMatchReport>, AppError> {
         let barcode_list = self.create_barcode_iter()?.extract_sample_barcodes(self.num_barcode)?;
 
-        
-        self.tile_list.par_iter().map(
-            |&tile_id| {
-                let mut chip_reader = tbx::Reader::from_path(&self.barcode_file)?;
-                let tid = chip_reader.tid(&tile_id.to_string())?;
-                chip_reader.fetch(tid, 1000, 37100)?;
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(self.cores())
+            .build()
+            .expect("Build thread pool failed");
 
-                let tile_list = chip_reader.records().map(
-                    |record| {
-                        let record = record?;
-                        let record = unsafe { String::from_utf8_unchecked(record) };
-                        let barcode = record.splitn(4, '\t').nth(3).ok_or(AppError::IoError(
-                            io::Error::new(io::ErrorKind::InvalidData, "Invalid tile's barcode file format")
-                        ))?;
+        pool.install(|| {
+            self.tile_list
+                .par_iter()
+                .map(|&tile_id| {
+                    let mut chip_reader = TbxReader::from_path(&self.barcode_file)?;
+                    let tid = chip_reader.tid(&tile_id.to_string())?;
+                    chip_reader.fetch(tid, 1000, 37100)?;
 
-                        Ok(barcode.to_string())
-                    }
-                ).collect::<Result<HashSet<String>, AppError>>()?;
-                let passed_num = tile_list.intersection(&barcode_list).count();
-                let percent = passed_num as f32 / tile_list.len() as f32;
-                let pass_threshold = percent >= self.threshold;
-                Ok(TileMatchReport::new(
-                    tile_id, 
-                    passed_num, 
-                    tile_list.len(), 
-                    percent, 
-                    pass_threshold
-                ))
-            }
-        ).collect::<Result<Vec<TileMatchReport>, AppError>>()
-    }  
-}
+                    let tile_list = chip_reader
+                        .records()
+                        .map(|record| {
+                            let record = record?;
+                            let record = unsafe { String::from_utf8_unchecked(record) };
+                            let barcode = record
+                                .splitn(4, '\t')
+                                .nth(3)
+                                .ok_or(
+                                    AppError::Io(
+                                        io::Error::new(
+                                            io::ErrorKind::InvalidData,
+                                            "Invalid tile's barcode file format"
+                                        )
+                                    )
+                                )?;
 
-#[derive(ValueEnum, Clone, Copy, Debug)]
-pub enum BarcodeMode {
-    Openst,
-    Custom,
-}
-
-pub type BarcodeConfig = (Position, String);
-impl BarcodeMode {
-    pub fn openst() -> BarcodeConfig {
-        let pos = Position::new(false, false, 2, 30);
-        // HDMI32-DraI: NNVNBVNNVNNVNNVNNVNNVNNVNNVNNNNN
-        // revcomp:     NNNNNBNNBNNBNNBNNBNNBNNBNNBVNBNN
-        let pattern: String = String::from("VNBVNNVNNVNNVNNVNNVNNVNNVNNN");
-        (pos, pattern)
+                            Ok(barcode.to_string())
+                        })
+                        .collect::<Result<HashSet<String>, AppError>>()?;
+                    let passed_num = tile_list.intersection(&barcode_list).count();
+                    let percent = (passed_num as f32) / (tile_list.len() as f32);
+                    let pass_threshold = percent >= self.threshold;
+                    Ok(
+                        TileMatchReport::new(
+                            tile_id,
+                            passed_num,
+                            tile_list.len(),
+                            percent,
+                            pass_threshold
+                        )
+                    )
+                })
+                .collect::<Result<Vec<TileMatchReport>, AppError>>()
+        })
     }
 }
 
@@ -295,10 +255,10 @@ pub struct TileMatchReport {
 impl TileMatchReport {
     #[inline]
     fn new(
-        tile_id: u64, 
-        passed_num: usize, 
-        total_num: usize, 
-        percent: f32, 
+        tile_id: u64,
+        passed_num: usize,
+        total_num: usize,
+        percent: f32,
         pass_threshold: bool
     ) -> Self {
         Self {
@@ -311,10 +271,14 @@ impl TileMatchReport {
     }
 
     #[inline]
-    pub fn tile_id(&self) -> u64 { self.tile_id }
+    pub fn tile_id(&self) -> u64 {
+        self.tile_id
+    }
 
     #[inline]
-    pub fn pass_threshold(&self) -> bool { self.pass_threshold }
+    pub fn pass_threshold(&self) -> bool {
+        self.pass_threshold
+    }
 }
 
 impl std::fmt::Display for TileMatchReport {
@@ -326,7 +290,11 @@ impl std::fmt::Display for TileMatchReport {
             self.total_num,
             self.passed_num,
             self.percent,
-            if self.pass_threshold { 1 } else { 0 },
+            if self.pass_threshold {
+                1
+            } else {
+                0
+            }
         )
     }
 }

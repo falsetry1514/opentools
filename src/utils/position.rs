@@ -1,4 +1,3 @@
-
 use std::ops::Range;
 use std::str::FromStr;
 use thiserror::Error;
@@ -7,8 +6,8 @@ use thiserror::Error;
 pub enum PositionError {
     #[error("Invalid format, expected 'read{{1/2}}:{{+/-}}:start-end'")]
     InvalidFormat,
-    #[error("Invalid read specifier, must be 'read1' or 'read2'")]
-    InvalidRead,
+    #[error("Invalid read/index specifier, must be 'read1', 'read2', 'index1', or 'index2'")]
+    InvalidReadOrIndex,
     #[error("Invalid strand, must be '+' or '-'")]
     InvalidStrand,
     #[error("Invalid start position, must be integer 0..150")]
@@ -22,8 +21,10 @@ pub enum PositionError {
 /// The struct stand for the position of sequence
 #[derive(Debug, Copy, Clone)]
 pub struct Position {
-    /// false stand for read1, true stand for read2 
-    read: bool,
+    /// false for index, true for read
+    read_type: bool,
+    /// false for read1, true for read2
+    read_number: bool,
     /// false stand for positive, true stand for negative
     strand: bool,
     /// Range in 0..150
@@ -31,32 +32,79 @@ pub struct Position {
     /// Range in 0..150, must larger than start
     end: usize,
     /// The len of sequence
-    len: usize
+    len: usize,
 }
 
 impl Position {
-    pub fn new(read: bool, strand: bool, start: usize, end: usize) -> Self {
+    pub fn new(read_type: bool, read_number: bool, strand: bool, start: usize, end: usize) -> Self {
         let len = end - start;
-        Self { read, strand, start, end, len }
+        Self { read_type, read_number, strand, start, end, len }
     }
 
     #[inline]
-    pub fn is_read2(&self) -> bool {self.read}
+    pub fn is_index(&self) -> bool {
+        !self.read_type
+    }
 
     #[inline]
-    pub fn is_revcomp(&self) -> bool {self.strand}
-    
-    #[inline]
-    pub fn start(&self) -> usize {self.start}
+    pub fn is_read(&self) -> bool {
+        self.read_type
+    }
 
     #[inline]
-    pub fn end(&self) -> usize {self.end}
+    pub fn is_first(&self) -> bool {
+        !self.read_number
+    }
 
     #[inline]
-    pub fn len(&self) -> usize {self.len}
+    pub fn is_second(&self) -> bool {
+        self.read_number
+    }
 
     #[inline]
-    pub fn range(&self) -> Range<usize> {self.start..self.end}
+    pub fn is_index1(&self) -> bool {
+        self.is_index() && self.is_first()
+    }
+
+    #[inline]
+    pub fn is_index2(&self) -> bool {
+        self.is_index() && self.is_second()
+    }
+
+    #[inline]
+    pub fn is_read1(&self) -> bool {
+        self.is_read() & self.is_first()
+    }
+
+    #[inline]
+    pub fn is_read2(&self) -> bool {
+        self.is_read() & self.is_second()
+    }
+
+    #[inline]
+    pub fn is_revcomp(&self) -> bool {
+        self.strand
+    }
+
+    #[inline]
+    pub fn start(&self) -> usize {
+        self.start
+    }
+
+    #[inline]
+    pub fn end(&self) -> usize {
+        self.end
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    #[inline]
+    pub fn range(&self) -> Range<usize> {
+        self.start..self.end
+    }
 
     #[inline]
     pub fn safe_slice<'a, T>(&self, data: &'a [T]) -> &'a [T] {
@@ -76,47 +124,66 @@ impl FromStr for Position {
         if parts.len() != 3 {
             return Err(PositionError::InvalidFormat);
         }
+
+        // split range
         let range_parts: Vec<&str> = parts[2].split('-').collect();
         if range_parts.len() != 2 {
             return Err(PositionError::InvalidFormat);
         }
 
-        // parse the part of read in position string ( read1 or read2 )
-        let read = match parts[0] {
-            "read1" => false,
-            "read2" => true,
-            _ => return Err(PositionError::InvalidRead),
+        // read/index parsing
+        let (read_type, read_number) = match parts[0].to_lowercase().as_str() {
+            "read1" => (true, false),
+            "read2" => (true, true),
+            "index1" => (false, false),
+            "index2" => (false, true),
+            _ => {
+                return Err(PositionError::InvalidReadOrIndex);
+            }
         };
 
         // parse the part of strand in position string ( + or - )
         let strand = match parts[1] {
             "+" => false,
             "-" => true,
-            _ => return Err(PositionError::InvalidStrand),
+            _ => {
+                return Err(PositionError::InvalidStrand);
+            }
         };
 
         // parse the part of range in position string ( start-end )
         let start = match range_parts[0].parse::<usize>() {
-            Err(_) => return Err(PositionError::InvalidStart),
-            Ok(v) if v > 150 => return Err(PositionError::InvalidStart),
+            Err(_) => {
+                return Err(PositionError::InvalidStart);
+            }
+            Ok(v) if v > 150 => {
+                return Err(PositionError::InvalidStart);
+            }
             Ok(v) => v,
         };
         let end = match range_parts[1].parse::<usize>() {
             Err(_) if range_parts[1].eq_ignore_ascii_case("end") => 150,
-            Err(_) => return Err(PositionError::InvalidFormat),
-            Ok(v) if v > 150 => return Err(PositionError::InvalidEnd),
-            Ok(v) if v < start => return Err(PositionError::EndBeforeStart),
+            Err(_) => {
+                return Err(PositionError::InvalidFormat);
+            }
+            Ok(v) if v > 150 => {
+                return Err(PositionError::InvalidEnd);
+            }
+            Ok(v) if v < start => {
+                return Err(PositionError::EndBeforeStart);
+            }
             Ok(v) => v,
         };
 
-        Ok(Position::new(read, strand, start, end))
+        Ok(Position::new(read_type, read_number, strand, start, end))
     }
 }
 
 impl std::fmt::Display for Position {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let read = if self.read { b'2' } else { b'1' };
+        let read_type = if self.is_index() { "index" } else { "read" };
+        let read_number = if self.is_read2() { b'2' } else { b'1' };
         let strand = if self.strand { b'-' } else { b'+' };
-        write!(f, "read{}:{}:{}-{}", read, strand, self.start, self.end)
+        write!(f, "{}{}:{}:{}-{}", read_type, read_number, strand, self.start, self.end)
     }
 }

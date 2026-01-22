@@ -1,33 +1,28 @@
-
-use crate::utils::{
-    fastqfile::{open, FastqReader},
-    position::Position,
-    barcode_iter::{validate_absolute_dirpath, BarcodesIter},
-    error::AppError,
-};
-
-use std::fs;
-use std::io::{self, BufWriter, Write};
+// ------------------
+// 1. std
+// ------------------
+use std::fs::{self, File};
+use std::io::{ self, BufWriter, Write };
+use std::path::{ Path, PathBuf };
 use std::process::Command;
-use std::path::{PathBuf, Path};
 
+// ------------------
+// 2. external crates
+// ------------------
+use clap::Parser;
+use regex::Regex;
 use sysinfo::System;
 
-use regex::Regex;
-
-use clap::{Parser, ValueEnum};
-
-pub fn validate_barcode_pattern(s: &str) -> Result<String, String> {
-    let re = Regex::new(r"^[ATGCURYMKSWHBVDN]+$").unwrap();
-    if re.is_match(s) {
-        Ok(s.to_string())
-    } else {
-        Err(
-            "Invalid barcode pattern. 
-            Allowed characters: A, T, G, C, R, Y, M, K, S, W, H, B, V, D, N".to_string()
-        )
-    }
-}
+// ------------------
+// 3. inner crate
+// ------------------
+use crate::utils::{
+    barcode_config::{ BarcodeMode, OpenstContext, validate_barcode_pattern },
+    barcode_iter::{ BarcodesIter, validate_absolute_dirpath },
+    error::AppError,
+    fastq_iter::open,
+    position::Position,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "bcl")]
@@ -35,12 +30,7 @@ pub fn validate_barcode_pattern(s: &str) -> Result<String, String> {
 #[command(next_line_help = true)]
 pub struct TouchBarcodeArgs {
     /// Path to BCL directory
-    #[arg(
-        short = 'I', 
-        long, 
-        required = true,
-        value_parser = validate_absolute_dirpath,
-    )]
+    #[arg(short = 'I', long, required = true, value_parser = validate_absolute_dirpath)]
     bcl_dir: PathBuf,
 
     /// Path to output directory
@@ -48,7 +38,7 @@ pub struct TouchBarcodeArgs {
     output: PathBuf,
 
     /// The cores used for running
-    #[arg(short,long)]
+    #[arg(short = '@', long)]
     cores: Option<usize>,
 
     /// barcode parsing mode
@@ -60,51 +50,59 @@ pub struct TouchBarcodeArgs {
     fastqc: bool,
 
     /// Custom barcode position (only effective when mode=custom)
-    /// 
-    /// Format: "read{1/2}:{+/-}:start-end" 
-    /// 
+    ///
+    /// Format: "read{1/2}:{+/-}:start-end"
+    ///
     /// Due to single-ended sequencing, there should only be read1, (e.g. "read1:+:1-16" or "read1:-:2-30")
     #[arg(
-        long, 
-        required_if_eq("mode", "custom"), 
+        long,
+        required_if_eq("mode", "custom"),
         value_parser = clap::value_parser!(Position),
-        value_name = "BARCODE_POS",
+        value_name = "BARCODE_POS"
     )]
     barcode_pos: Option<Position>,
 
     /// Custom barcode pattern (only effective when mode=custom)
-    /// 
+    ///
     /// Regex: ^[ATGCNRYMKSWHBVD]+$
-    /// 
+    ///
     /// there should only be the pattern before convert sequence into reverse complement sequence.
     /// (e.g. openst-barcode: VNBVNNVNNVNNVNNVNNVNNVNNVNNN, openst-seq: NNNBNNBNNBNNBNNBNNBNNBNNBVNB)
     #[arg(
-        long, 
-        required_if_eq("mode", "custom"), 
+        long,
+        required_if_eq("mode", "custom"),
         value_parser = validate_barcode_pattern,
-        value_name = "BARCODE_PATTERN",
+        value_name = "BARCODE_PATTERN"
     )]
     barcode_pattern: Option<String>,
 }
 
 impl TouchBarcodeArgs {
-    pub fn init(self) -> InitTouchBarcodeArgs {
-        let (pos, pattern) = match (self.barcode_pos, self.barcode_pattern) {
-            (Some(pos), Some(pattern)) => (pos, pattern),
-            (None, None) => BarcodeMode::openst(),
-            _ => unreachable!("clap parse the error is impossible.")
+    pub fn init(self) -> Result<InitTouchBarcodeArgs, AppError> {
+        let (pos, pattern) = match (self.mode, self.barcode_pos, self.barcode_pattern) {
+            (BarcodeMode::Custom, Some(pos), Some(pattern)) => (pos, pattern),
+            (BarcodeMode::Custom, _, _) => {
+                return Err(AppError::CommandError(
+                    "Custom barcode mode requires --barcode-pos and --barcode-pattern".into(),
+                ));
+            },
+            (BarcodeMode::Openst, None, None) => BarcodeMode::openst(OpenstContext::Chip),
+            _ => {
+                unimplemented!(
+                    "Other barcode modes are unimplemented!",
+                );
+            },
         };
 
-        let mut sys = System::new();
-        sys.refresh_cpu_all();
-        let upper_cores = sys.cpus().len().saturating_sub(2).max(1);
-
-        let n_core = match self.cores {
-            Some(n) => n.min(upper_cores),
-            None => upper_cores
+        let upper_cores = {
+            let mut sys = System::new();
+            sys.refresh_cpu_all();
+            sys.cpus().len().saturating_sub(2).max(1)
         };
 
-        InitTouchBarcodeArgs::new(self.bcl_dir, self.output, n_core, self.fastqc, pos, pattern)
+        let n_core = self.cores.unwrap_or(upper_cores).min(upper_cores);
+
+        Ok(InitTouchBarcodeArgs::new(self.bcl_dir, self.output, n_core, self.fastqc, pos, pattern))
     }
 }
 
@@ -120,11 +118,11 @@ pub struct InitTouchBarcodeArgs {
 impl InitTouchBarcodeArgs {
     #[inline]
     fn new(
-        bcl_dir: PathBuf, 
-        output: PathBuf, 
+        bcl_dir: PathBuf,
+        output: PathBuf,
         cores: usize,
-        fastqc: bool, 
-        pos: Position, 
+        fastqc: bool,
+        pos: Position,
         pattern: String
     ) -> Self {
         Self {
@@ -133,32 +131,42 @@ impl InitTouchBarcodeArgs {
             cores,
             fastqc,
             pos,
-            pattern
+            pattern,
         }
     }
 
     #[inline]
-    fn bcl_dir(&self) -> &Path { self.bcl_dir.as_path() }
+    fn bcl_dir(&self) -> &Path {
+        self.bcl_dir.as_path()
+    }
 
     #[inline]
-    pub fn output(&self) -> &Path { &self.output.as_path() }
+    pub fn output(&self) -> &Path {
+        &self.output.as_path()
+    }
 
     #[inline]
-    pub fn cores(&self) -> usize { self.cores }
+    pub fn cores(&self) -> usize {
+        self.cores
+    }
 
     #[inline]
-    fn pos(&self) -> &Position { &self.pos }
+    fn pos(&self) -> &Position {
+        &self.pos
+    }
 
     #[inline]
-    fn pattern(&self) -> &str { &self.pattern }
+    fn pattern(&self) -> &str {
+        &self.pattern
+    }
 
     #[inline]
-    pub fn fastq_path(&self, tile_id: &str) -> PathBuf { 
+    pub fn fastq_path(&self, tile_id: &str) -> PathBuf {
         self.output.join(format!("fastq/{tile_id}"))
     }
 
     #[inline]
-    pub fn fastq_file(&self, tile_id: &str) -> PathBuf { 
+    pub fn fastq_file(&self, tile_id: &str) -> PathBuf {
         self.output.join(format!("fastq/{tile_id}/Undetermined_S0_R1_001.fastq.gz"))
     }
 
@@ -168,7 +176,8 @@ impl InitTouchBarcodeArgs {
     }
 
     fn command_nonexists(&self, command: &str) -> io::Result<()> {
-        let stauts = Command::new(command).arg("--version")
+        let stauts = Command::new(command)
+            .arg("--version")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
@@ -176,10 +185,7 @@ impl InitTouchBarcodeArgs {
         if stauts {
             Ok(())
         } else {
-            Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("{} command not found", command),
-            ))
+            Err(io::Error::new(io::ErrorKind::NotFound, format!("{} command not found", command)))
         }
     }
 
@@ -190,10 +196,7 @@ impl InitTouchBarcodeArgs {
         if output.stdout.len() > 0 {
             Ok(())
         } else {
-            Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("{} image not found", image),
-            ))
+            Err(io::Error::new(io::ErrorKind::NotFound, format!("{} image not found", image)))
         }
     }
 
@@ -216,12 +219,12 @@ impl InitTouchBarcodeArgs {
         let path = self.bcl_dir().join("RunInfo.xml");
         let re = Regex::new(r#"<Tile>([1-4]_[0-9]{4})</Tile>"#).unwrap();
         let content = fs::read_to_string(&path)?;
-        let tile_ids: Vec<String> = re.captures_iter(&content)
-        .filter_map(|cap| cap.get(1).map(
-            |id| id.as_str().to_string()
-        )).collect();
-        if tile_ids.is_empty() { 
-            return Err(AppError::EmptyTileIDsList(path)) 
+        let tile_ids: Vec<String> = re
+            .captures_iter(&content)
+            .filter_map(|cap| cap.get(1).map(|id| id.as_str().to_string()))
+            .collect();
+        if tile_ids.is_empty() {
+            return Err(AppError::EmptyTileIDsList(path));
         } else {
             Ok(tile_ids)
         }
@@ -233,23 +236,26 @@ impl InitTouchBarcodeArgs {
         args: &[&str],
         output_dir: &Path,
         tile_id: &str,
-        error_msg: &str,
+        error_msg: &str
     ) -> Result<(), AppError> {
         use std::process::Stdio;
-    
+
         // 确保输出目录存在
         if !output_dir.exists() {
             fs::create_dir_all(output_dir)?;
         }
-        
+
         // 创建/打开日志文件（追加模式）
         let log_path = output_dir.join("command_output.log");
         let mut log_file = fs::OpenOptions::new().create(true).append(true).open(log_path)?;
-        
+
         // 执行命令
-        let output = Command::new(command).args(args)
-            .stdout(Stdio::piped()).stderr(Stdio::piped()).output()?;
-        
+        let output = Command::new(command)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()?;
+
         // 记录日志
         writeln!(
             log_file,
@@ -265,62 +271,61 @@ impl InitTouchBarcodeArgs {
             tile_id,
             String::from_utf8_lossy(&output.stderr)
         )?;
-        
+
         // 检查执行状态
         if !output.status.success() {
-            return Err(AppError::CommandError(
-                format!("{} in tile_id {}", error_msg, tile_id)
-            ));
+            return Err(AppError::CommandError(format!("{} in tile_id {}", error_msg, tile_id)));
         }
-        
+
         Ok(())
     }
 
     fn bcl_convert(&self, tile_id: &str, fastq_dir: &Path) -> Result<(), AppError> {
         let args = [
-            "--bcl-input-directory", &self.bcl_dir.display().to_string(),
-            "--output-directory", &fastq_dir.display().to_string(),
-            "--tiles", &format!("s_{}", tile_id),
-            "--no-sample-sheet", "true",
-            "--no-lane-splitting", "true",
-            "--force"
+            "--bcl-input-directory",
+            &self.bcl_dir.display().to_string(),
+            "--output-directory",
+            &fastq_dir.display().to_string(),
+            "--tiles",
+            &format!("s_{}", tile_id),
+            "--no-sample-sheet",
+            "true",
+            "--no-lane-splitting",
+            "true",
+            "--force",
         ];
-        
-        self.run_command(
-            "bcl-convert",
-            &args,
-            &fastq_dir,
-            tile_id,
-            "bcl-convert run failed"
-        )
+
+        self.run_command("bcl-convert", &args, &fastq_dir, tile_id, "bcl-convert run failed")
     }
-    
-    fn docker_image_run(&self, tile_id: &str, fastq_dir: &Path) -> Result<(), AppError> {        
+
+    fn docker_image_run(&self, tile_id: &str, fastq_dir: &Path) -> Result<(), AppError> {
         let args = [
-            "run", "--rm",
-            "-v", &format!("{}:/mnt/run", self.bcl_dir.display()),
-            "-v", &format!("{}:/mnt/output", fastq_dir.display()),
+            "run",
+            "--rm",
+            "-v",
+            &format!("{}:/mnt/run", self.bcl_dir.display()),
+            "-v",
+            &format!("{}:/mnt/output", fastq_dir.display()),
             "zymoresearch/bcl-convert",
-            "--bcl-input-directory", "/mnt/run",
-            "--output-directory", "/mnt/output",
-            "--tiles", &format!("s_{}", tile_id),
-            "--no-sample-sheet", "true",
-            "--no-lane-splitting", "true",
-            "--force"
+            "--bcl-input-directory",
+            "/mnt/run",
+            "--output-directory",
+            "/mnt/output",
+            "--tiles",
+            &format!("s_{}", tile_id),
+            "--no-sample-sheet",
+            "true",
+            "--no-lane-splitting",
+            "true",
+            "--force",
         ];
-        
-        self.run_command(
-            "docker",
-            &args,
-            &fastq_dir,
-            tile_id,
-            "Docker run failed"
-        )
+
+        self.run_command("docker", &args, &fastq_dir, tile_id, "Docker run failed")
     }
 
     fn fastqc_run(&self, tile_id: &str) -> Result<(), AppError> {
         let fastq_file = self.fastq_file(tile_id);
-        
+
         self.run_command(
             "fastqc",
             &[fastq_file.as_os_str().to_str().unwrap()],
@@ -339,38 +344,73 @@ impl InitTouchBarcodeArgs {
         } else {
             return Err(AppError::UnsupportedOS);
         }
-    
+
         if self.fastqc {
             self.fastqc_run(tile_id)?;
         }
         Ok(())
     }
 
-    pub fn create_barcode_iter(&self, tile_id: &str) -> io::Result<BarcodesIter<BufWriter<fs::File>>> {
-        let inner: FastqReader = open(
+    pub fn render_writer(&self, tile_id: &str) -> io::Result<BufWriter<File>> {
+        fs::OpenOptions::new().write(true).create(true).open(self.tmp_file(tile_id)).map(BufWriter::new)
+    }
+
+    pub fn create_barcode_iter(
+        &self,
+        tile_id: &str
+    ) -> io::Result<BarcodesIter<impl std::io::Read>> {
+        let inner = open(
             self.fastq_path(tile_id).join("Undetermined_S0_R1_001.fastq.gz")
         )?;
-        let tmp_path = self.tmp_file(tile_id);
-        let writer = fs::OpenOptions::new().write(true)
-            .create(true).open(tmp_path).map(BufWriter::new)?;
-        Ok(BarcodesIter::into_file(inner, self.pos(), self.pattern(), writer))
+        Ok(BarcodesIter::new(inner, self.pos(), self.pattern()))
     }
 }
 
-
-#[derive(ValueEnum, Clone, Copy, Debug)]
-enum BarcodeMode {
-    Openst,
-    Custom,
+pub struct TouchBarcodeReport {
+    total_count: u64,
+    filter_qual_count: u64,
+    filter_seq_count: u64,
+    filter_dup_count: u64,
 }
 
-pub type BarcodeConfig = (Position, String);
-impl BarcodeMode {
-    pub fn openst() -> BarcodeConfig {
-        let pos = Position::new(false, true, 2, 30);
-        // HDMI32-DraI: NNVNBVNNVNNVNNVNNVNNVNNVNNVNNNNN
-        // revcomp:     NNNNNBNNBNNBNNBNNBNNBNNBNNBVNBNN
-        let pattern: String = String::from("NNNBNNBNNBNNBNNBNNBNNBNNBVNB");
-        (pos, pattern)
+impl TouchBarcodeReport {
+    #[inline]
+    pub fn new(
+        total_count: u64,
+        filter_qual_count: u64,
+        filter_seq_count: u64,
+        filter_dup_count: u64
+    ) -> Self {
+        Self {
+            total_count,
+            filter_qual_count,
+            filter_seq_count,
+            filter_dup_count,
+        }
+    }
+
+    #[inline]
+    fn filtered_count(&self) -> u64 {
+        self.filter_qual_count + self.filter_seq_count + self.filter_dup_count
+    }
+
+    #[inline]
+    fn passed_count(&self) -> u64 {
+        self.total_count - self.filtered_count()
+    }
+}
+
+impl std::fmt::Display for TouchBarcodeReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Total={}, Filtered={} (Qual={}, Seq={}, Dup={}), Passed={}",
+            self.total_count,
+            self.filtered_count(),
+            self.filter_qual_count,
+            self.filter_seq_count,
+            self.filter_dup_count,
+            self.passed_count()
+        )
     }
 }

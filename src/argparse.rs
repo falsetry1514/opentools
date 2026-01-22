@@ -1,17 +1,18 @@
-
 pub mod touchbarcode;
 pub mod dedupbarcode;
 pub mod tilesmatch;
+pub mod demux_i2;
 
-use clap::{Parser, Subcommand};
+use clap::{ Parser, Subcommand };
 use self::{
     touchbarcode::TouchBarcodeArgs,
     dedupbarcode::DedupBarcodeArgs,
     tilesmatch::TilesMatchArgs,
+    demux_i2::DemuxI2Args,
 };
 
 /// Command line arguments resolve the main structure
-/// 
+///
 /// Use the clap-derived macro to implement command line parameter parsing
 #[derive(Parser)]
 #[command(name = "opentools")]
@@ -24,14 +25,15 @@ pub struct Cli {
 }
 
 /// Subcommand enumeration definitions
-/// 
+///
 /// Each variant corresponds to a specific tool function
 #[derive(Subcommand)]
 pub enum Commands {
-    #[clap(name="touchbarcode")]
-    TouchBarcode(TouchBarcodeArgs),
-    #[clap(name="dedupbarcode")]
-    ViewBarcode(DedupBarcodeArgs),
-    #[clap(name="tilesmatch")]
-    TilesMatch(TilesMatchArgs),
+    #[clap(name = "touchbarcode")] TouchBarcode(TouchBarcodeArgs),
+
+    #[clap(name = "dedupbarcode")] ViewBarcode(DedupBarcodeArgs),
+
+    #[clap(name = "tilesmatch")] TilesMatch(TilesMatchArgs),
+
+    #[clap(name = "demux-i2")] DemuxI2(DemuxI2Args),
 }

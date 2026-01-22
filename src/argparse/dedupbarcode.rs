@@ -1,65 +1,51 @@
-use crate::utils::{
-    barcode_iter::{validate_absolute_filepath, validate_absolute_dirpath},
-    error::AppError,
-};
-use crate::argparse::tilesmatch::is_valid_tile_id;
-
+// ------------------
+// 1. std
+// ------------------
 use std::fs;
-use std::io::{self, Write, BufWriter};
+use std::io::{ self, Write, BufWriter };
 use std::path::PathBuf;
 
+// ------------------
+// 2. external crates
+// ------------------
+use clap::Parser;
+use sysinfo::System;
+use dashmap::DashSet;
+use rust_htslib::tbx::{ Reader as TbxReader, Read };
 use flate2::write::GzEncoder;
 use flate2::Compression;
-
-use clap::Parser;
-
-use sysinfo::System;
-
-use dashmap::DashSet;
-
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
 
-use rust_htslib::tbx::{self, Read};
+// ------------------
+// 3. inner crate
+// ------------------
+use crate::utils::{
+    barcode_iter::{ validate_absolute_filepath, validate_absolute_dirpath },
+    error::AppError,
+    tile_ids::is_valid_tile_id,
+};
 
 
 #[derive(Parser, Debug)]
 #[command(name = "dedupbarcode")]
-#[command(about = 
-    "Deduplicate barcodes among the given tiles id list", 
-    long_about = None
-)]
+#[command(about = "Deduplicate barcodes among the given tiles id list", long_about = None)]
 #[command(next_line_help = true)]
 pub struct DedupBarcodeArgs {
     /// The path to the barcode file
-    #[arg(
-        short = 'I', 
-        long, 
-        required = true, 
-        value_parser = validate_absolute_filepath,
-    )]
+    #[arg(short = 'I', long, required = true, value_parser = validate_absolute_filepath)]
     barcode_file: PathBuf,
 
     /// the tile id list to query
-    #[arg(
-        long, 
-        value_delimiter = ' ',
-        num_args = 1..,
-        value_parser = is_valid_tile_id,
-    )]
+    #[arg(long, value_delimiter = ' ', num_args = 1.., value_parser = is_valid_tile_id)]
     tile_list: Vec<u64>,
 
     /// The path to the FASTQ file
-    #[arg(
-        short,
-        long,
-        required = true,
-        value_parser = validate_absolute_dirpath,
-    )]
+    #[arg(short, long, required = true, value_parser = validate_absolute_dirpath)]
     output_dir: PathBuf,
 
     /// The cores used for deduplate
-    #[arg(short,long)]
+    #[arg(short = '@', long)]
     cores: Option<usize>,
 }
 
@@ -70,21 +56,24 @@ impl DedupBarcodeArgs {
     }
 
     pub fn dedup(self) -> Result<(), AppError> {
+        if !self.output_dir.exists() {
+            fs::create_dir_all(&self.output_dir)?;
+        }
+
         let barcode_set = DashSet::new();
 
-        let mut sys = System::new();
-        sys.refresh_cpu_all();
-        let upper_cores = sys.cpus().len().saturating_sub(2).max(1);
-
-        let n_core = match self.cores {
-            Some(n) => n.min(upper_cores),
-            None => upper_cores
+        let upper_cores = {
+            let mut sys = System::new();
+            sys.refresh_cpu_all();
+            sys.cpus().len().saturating_sub(2).max(1)
         };
 
+        let n_core = self.cores.unwrap_or(upper_cores).min(upper_cores);
+
         let pool = ThreadPoolBuilder::new()
-        .num_threads(n_core)
-        .build()
-        .expect("Failed to build Rayon thread pool");
+            .num_threads(n_core)
+            .build()
+            .expect("Failed to build Rayon thread pool");
 
         println!("Use {} threads for deduplicating", n_core);
 
@@ -101,57 +90,70 @@ impl DedupBarcodeArgs {
         );
 
         let (sender, receiver) = crossbeam::channel::unbounded();
-    
-        let producer_handle = std::thread::spawn(
-            move || {
-                pool.install(|| {
-                    self.tile_list.par_iter().try_for_each(|&tile_id| {
-                        let tile_file = self.output_dir.join(format!("tile_{tile_id}.tsv.gz"));
-                        let file = fs::OpenOptions::new().create(true).write(true).truncate(true).open(tile_file)?;
-                        let encoder = GzEncoder::new(file, Compression::default());
-                        let mut writer = BufWriter::new(encoder);
-            
-                        let mut reader = tbx::Reader::from_path(&self.barcode_file)?;
-                        let tid = reader.tid(&tile_id.to_string())?;
-                        reader.fetch(tid, 1000, 37100)?;
 
-                        writeln!(writer, "cell_bc\tx_pos\ty_pos")?;
-                        for record in reader.records() {
-                            let record = record?;
-                            let record = unsafe { String::from_utf8_unchecked(record) };
-                            let parts: Vec<&str> = record.splitn(4, '\t').collect();
-                            if parts.len() < 4 {
-                                return Err(AppError::IoError(io::Error::new(
-                                    io::ErrorKind::InvalidData,
-                                    "Invalid tile's barcode file format",
-                                )));
-                            }
-                            let barcode = parts[3];
-                            let new_record = format!("{}\t{}\t{}", barcode, parts[1], parts[2]);
+        let producer_handle = std::thread::spawn(move || {
+            pool.install(|| {
+                self.tile_list.par_iter().try_for_each(|&tile_id| {
+                    let tile_file = self.output_dir.join(format!("tile_{tile_id}.tsv.gz"));
+                    let file = fs::OpenOptions
+                        ::new()
+                        .create(true)
+                        .write(true)
+                        .truncate(true)
+                        .open(tile_file)?;
+                    let encoder = GzEncoder::new(file, Compression::default());
+                    let mut writer = BufWriter::new(encoder);
 
-                            if barcode_set.insert(barcode.to_string()) {
-                                writeln!(writer, "{}", new_record)?;
-                                sender.send((record.to_owned(), barcode.to_string())).map_err(|_| AppError::ChannelError)?;
-                            }
+                    let mut reader = TbxReader::from_path(&self.barcode_file)?;
+                    let tid = reader.tid(&tile_id.to_string())?;
+                    reader.fetch(tid, 1000, 37100)?;
+
+                    writeln!(writer, "cell_bc\tx_pos\ty_pos")?;
+                    for record in reader.records() {
+                        let record = record?;
+                        let record = unsafe { String::from_utf8_unchecked(record) };
+                        let parts: Vec<&str> = record.splitn(4, '\t').collect();
+                        if parts.len() < 4 {
+                            return Err(
+                                AppError::Io(
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "Invalid tile's barcode file format"
+                                    )
+                                )
+                            );
                         }
-                        Ok::<(), AppError>(())
-                    })
-                })
-            }
-        );
+                        let barcode = parts[3];
+                        let new_record = format!("{}\t{}\t{}", barcode, parts[1], parts[2]);
 
-        crossbeam::scope(|s| {
-            s.spawn(|_| {
-                for (record, barcode) in receiver {
-                    writeln!(total_writer, "{}", barcode)?;
-                    writeln!(map_writer, "{}", record)?;
-                }
-                Ok::<(), AppError>(())
-            }).join().unwrap()
-        }).unwrap()?;
+                        if barcode_set.insert(barcode.to_string()) {
+                            writeln!(writer, "{}", new_record)?;
+                            sender
+                                .send((record.to_owned(), barcode.to_string()))
+                                .map_err(|_| AppError::ChannelError)?;
+                        }
+                    }
+                    Ok::<(), AppError>(())
+                })
+            })
+        });
+
+        crossbeam
+            ::scope(|s| {
+                s.spawn(|_| {
+                    for (record, barcode) in receiver {
+                        writeln!(total_writer, "{}", barcode)?;
+                        writeln!(map_writer, "{}", record)?;
+                    }
+                    Ok::<(), AppError>(())
+                })
+                    .join()
+                    .unwrap()
+            })
+            .unwrap()?;
 
         producer_handle.join().unwrap()?;
-        
+
         Ok(())
     }
 }
