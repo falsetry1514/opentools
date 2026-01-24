@@ -197,10 +197,12 @@ impl<'a, R: Read> Iterator for BarcodesIter<'a, R> {
             None => return None,
         };
 
+        let seq = self.pos.safe_slice(&rec.seq);
+        let qual = self.pos.safe_slice(&rec.qual);
         let id = rec.id().expect("Invalid record id");
         let (lane, tile, x_pos, y_pos) = parse_id(id);
 
-        let barcode = BarcodeRecord::new(&rec.seq, &rec.qual, lane, tile, x_pos, y_pos, false).process_sequence();
+        let barcode = BarcodeRecord::new(seq, qual, lane, tile, x_pos, y_pos, self.pos.is_revcomp()).process_sequence();
 
         Some(Ok(barcode))
     }

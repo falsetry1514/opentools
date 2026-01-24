@@ -50,11 +50,6 @@ pub struct DedupBarcodeArgs {
 }
 
 impl DedupBarcodeArgs {
-    #[inline]
-    pub fn tile_list(&self) -> &[u64] {
-        &self.tile_list
-    }
-
     pub fn dedup(self) -> Result<(), AppError> {
         if !self.output_dir.exists() {
             fs::create_dir_all(&self.output_dir)?;

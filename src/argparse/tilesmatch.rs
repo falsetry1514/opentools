@@ -173,11 +173,11 @@ impl InitTilesMatchArgs {
     }
 
     #[inline]
-    pub fn cores(&self) -> usize {
+    fn cores(&self) -> usize {
         self.cores
     }
 
-    pub fn create_barcode_iter(&self) -> Result<BarcodesIter<impl std::io::Read>, AppError> {
+    fn create_barcode_iter(&self) -> Result<BarcodesIter<impl std::io::Read>, AppError> {
 
         let inner = open(&self.read)?;
         // HashSet::with_capacity(self.num_barcode)

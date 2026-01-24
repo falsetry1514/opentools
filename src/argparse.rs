@@ -1,14 +1,16 @@
 pub mod touchbarcode;
 pub mod dedupbarcode;
 pub mod tilesmatch;
-pub mod demux_i2;
+pub mod add_bc;
+pub mod stats_bc;
 
 use clap::{ Parser, Subcommand };
 use self::{
     touchbarcode::TouchBarcodeArgs,
     dedupbarcode::DedupBarcodeArgs,
     tilesmatch::TilesMatchArgs,
-    demux_i2::DemuxI2Args,
+    add_bc::AddBCArgs,
+    stats_bc::StatsBCArgs,
 };
 
 /// Command line arguments resolve the main structure
@@ -35,5 +37,7 @@ pub enum Commands {
 
     #[clap(name = "tilesmatch")] TilesMatch(TilesMatchArgs),
 
-    #[clap(name = "demux-i2")] DemuxI2(DemuxI2Args),
+    #[clap(name = "addbc")] AddBC(AddBCArgs),
+
+    #[clap(name = "statsbc")] StatsBC(StatsBCArgs),
 }
