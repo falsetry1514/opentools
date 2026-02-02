@@ -29,14 +29,14 @@ impl BarcodeMode {
 
     fn openst_chip() -> BarcodeConfig {
         let pos = Position::new(true, false, true, 2, 30);
-        // HDMI32-DraI: NNVNBVNNVNNVNNVNNVNNVNNVNNVNNNNN
-        let pattern = String::from("VNBVNNVNNVNNVNNVNNVNNVNNVNNN");
+        // HDMI32-DraI: NNNNNBNNBNNBNNBNNBNNBNNBNNBVNBNN
+        let pattern = String::from("NNNBNNBNNBNNBNNBNNBNNBNNBVNB");
         (pos, pattern)
     }
 
     fn openst_tile() -> BarcodeConfig {
         let pos = Position::new(true, false, false, 2, 30);
-        // barcode:     NNNNNBNNBNNBNNBNNBNNBNNBNNBVNBNN
+        // barcode:     NNVNBVNNVNNVNNVNNVNNVNNVNNVNNNNN
         let pattern = String::from("VNBVNNVNNVNNVNNVNNVNNVNNVNNN");
         (pos, pattern)
     }

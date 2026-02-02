@@ -1,7 +1,7 @@
 // ------------------
 // 1. std
 // ------------------
-use std::fs::{self, File};
+use std::fs::{ self, File };
 use std::io::{ self, BufWriter, Write };
 use std::path::{ Path, PathBuf };
 use std::process::Command;
@@ -30,12 +30,13 @@ use crate::utils::{
 #[command(next_line_help = true)]
 pub struct TouchBarcodeArgs {
     /// Path to BCL directory
-    #[arg(short = 'I', long, required = true, value_parser = validate_absolute_dirpath)]
+    #[arg(value_parser = validate_absolute_dirpath)]
     bcl_dir: PathBuf,
 
     /// Path to output directory
-    #[arg(short, long, required = true, value_parser = validate_absolute_dirpath)]
-    output: PathBuf,
+    /// If not provided, defaults to the parent of `bcl_dir`.
+    #[arg(short = 'o', long)]
+    output: Option<PathBuf>,
 
     /// The cores used for running
     #[arg(short = '@', long)]
@@ -79,19 +80,23 @@ pub struct TouchBarcodeArgs {
 
 impl TouchBarcodeArgs {
     pub fn init(self) -> Result<InitTouchBarcodeArgs, AppError> {
+        let output = self.output.unwrap_or_else(|| {
+            self.bcl_dir.parent().expect("bcl_dir has no parent").to_path_buf()
+        });
+
         let (pos, pattern) = match (self.mode, self.barcode_pos, self.barcode_pattern) {
             (BarcodeMode::Custom, Some(pos), Some(pattern)) => (pos, pattern),
             (BarcodeMode::Custom, _, _) => {
-                return Err(AppError::CommandError(
-                    "Custom barcode mode requires --barcode-pos and --barcode-pattern".into(),
-                ));
-            },
+                return Err(
+                    AppError::CommandError(
+                        "Custom barcode mode requires --barcode-pos and --barcode-pattern".into()
+                    )
+                );
+            }
             (BarcodeMode::Openst, None, None) => BarcodeMode::openst(OpenstContext::Chip),
             _ => {
-                unimplemented!(
-                    "Other barcode modes are unimplemented!",
-                );
-            },
+                unimplemented!("Other barcode modes are unimplemented!");
+            }
         };
 
         let upper_cores = {
@@ -102,7 +107,7 @@ impl TouchBarcodeArgs {
 
         let n_core = self.cores.unwrap_or(upper_cores).min(upper_cores);
 
-        Ok(InitTouchBarcodeArgs::new(self.bcl_dir, self.output, n_core, self.fastqc, pos, pattern))
+        Ok(InitTouchBarcodeArgs::new(self.bcl_dir, output, n_core, self.fastqc, pos, pattern))
     }
 }
 
@@ -176,28 +181,29 @@ impl InitTouchBarcodeArgs {
     }
 
     fn command_nonexists(&self, command: &str) -> io::Result<()> {
-        let stauts = Command::new(command)
+        Command::new(command)
             .arg("--version")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .is_ok();
-        if stauts {
-            Ok(())
-        } else {
-            Err(io::Error::new(io::ErrorKind::NotFound, format!("{} command not found", command)))
-        }
+            .map(|_| ()) // 如果成功，返回 ()
+            .map_err(|_|
+                io::Error::new(io::ErrorKind::NotFound, format!("{} command not found", command))
+            )
     }
 
     #[cfg(target_os = "macos")]
     fn docker_image_nonexists(&self, image: &str) -> io::Result<()> {
-        let output = Command::new("docker").args(&["images", "-q", image]).output()?;
-
-        if output.stdout.len() > 0 {
-            Ok(())
-        } else {
-            Err(io::Error::new(io::ErrorKind::NotFound, format!("{} image not found", image)))
-        }
+        Command::new("docker")
+            .args(&["images", "-q", image])
+            .output()
+            .map(|output| {
+                if !output.stdout.is_empty() {
+                    Ok(())
+                } else {
+                    Err(io::Error::new(io::ErrorKind::NotFound, format!("{image} image not found")))
+                }
+            })?
     }
 
     pub fn validate_command(&self) -> io::Result<()> {
@@ -223,11 +229,7 @@ impl InitTouchBarcodeArgs {
             .captures_iter(&content)
             .filter_map(|cap| cap.get(1).map(|id| id.as_str().to_string()))
             .collect();
-        if tile_ids.is_empty() {
-            return Err(AppError::EmptyTileIDsList(path));
-        } else {
-            Ok(tile_ids)
-        }
+        (!tile_ids.is_empty()).then(|| tile_ids).ok_or_else(|| AppError::EmptyTileIDsList(path))
     }
 
     fn run_command(
@@ -240,14 +242,16 @@ impl InitTouchBarcodeArgs {
     ) -> Result<(), AppError> {
         use std::process::Stdio;
 
-        // 确保输出目录存在
-        if !output_dir.exists() {
-            fs::create_dir_all(output_dir)?;
-        }
+        fs::create_dir_all(output_dir)?;
 
         // 创建/打开日志文件（追加模式）
         let log_path = output_dir.join("command_output.log");
-        let mut log_file = fs::OpenOptions::new().create(true).append(true).open(log_path)?;
+        let mut log_file = fs::OpenOptions
+            ::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(log_path)?;
 
         // 执行命令
         let output = Command::new(command)
@@ -257,27 +261,24 @@ impl InitTouchBarcodeArgs {
             .output()?;
 
         // 记录日志
-        writeln!(
-            log_file,
-            "{} stdout in tile_id {}:\n{}",
-            command,
-            tile_id,
-            String::from_utf8_lossy(&output.stdout)
-        )?;
-        writeln!(
-            log_file,
-            "{} stderr in tile_id {}:\n{}",
-            command,
-            tile_id,
-            String::from_utf8_lossy(&output.stderr)
-        )?;
-
-        // 检查执行状态
-        if !output.status.success() {
-            return Err(AppError::CommandError(format!("{} in tile_id {}", error_msg, tile_id)));
+        for (stream_name, buf) in &[
+            ("stdout", &output.stdout),
+            ("stderr", &output.stderr),
+        ] {
+            writeln!(
+                log_file,
+                "{} {} in tile_id {}:\n{}",
+                command,
+                stream_name,
+                tile_id,
+                String::from_utf8_lossy(buf)
+            )?;
         }
 
-        Ok(())
+        // 检查执行状态
+        (!output.status.success())
+            .then(|| ())
+            .ok_or_else(|| AppError::CommandError(format!("{} in tile_id {}", error_msg, tile_id)))
     }
 
     fn bcl_convert(&self, tile_id: &str, fastq_dir: &Path) -> Result<(), AppError> {
@@ -337,12 +338,10 @@ impl InitTouchBarcodeArgs {
 
     pub fn convert_bcl_into_tile(&self, tile_id: &str) -> Result<(), AppError> {
         let fastq_dir = self.fastq_path(tile_id);
-        if cfg!(target_os = "linux") {
-            self.bcl_convert(tile_id, &fastq_dir)?;
-        } else if cfg!(target_os = "macos") {
-            self.docker_image_run(tile_id, &fastq_dir)?;
-        } else {
-            return Err(AppError::UnsupportedOS);
+        match () {
+            _ if cfg!(target_os = "linux") => self.bcl_convert(tile_id, &fastq_dir)?,
+            _ if cfg!(target_os = "macos") => self.docker_image_run(tile_id, &fastq_dir)?,
+            _ => return Err(AppError::UnsupportedOS),
         }
 
         if self.fastqc {
@@ -352,16 +351,20 @@ impl InitTouchBarcodeArgs {
     }
 
     pub fn render_writer(&self, tile_id: &str) -> io::Result<BufWriter<File>> {
-        fs::OpenOptions::new().write(true).create(true).open(self.tmp_file(tile_id)).map(BufWriter::new)
+        fs::OpenOptions
+            ::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(self.tmp_file(tile_id))
+            .map(BufWriter::new)
     }
 
     pub fn create_barcode_iter(
         &self,
         tile_id: &str
     ) -> io::Result<BarcodesIter<impl std::io::Read>> {
-        let inner = open(
-            self.fastq_path(tile_id).join("Undetermined_S0_R1_001.fastq.gz")
-        )?;
+        let inner = open(self.fastq_path(tile_id).join("Undetermined_S0_R1_001.fastq.gz"))?;
         Ok(BarcodesIter::new(inner, self.pos(), self.pattern()))
     }
 }

@@ -23,7 +23,7 @@ pub fn validate_absolute_dirpath(s: &str) -> io::Result<PathBuf> {
 
 pub fn validate_absolute_filepath(s: &str) -> io::Result<PathBuf> {
     let path = Path::new(s).to_path_buf();
-    if !path.is_file() {
+    if path.exists() && !path.is_file() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("{} is not a file", s)));
     }
     Ok(path)

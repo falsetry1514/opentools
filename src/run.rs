@@ -1,3 +1,23 @@
+use std::path::PathBuf;
+// ------------------
+// 1. std
+// ------------------
+use std::sync::{ Arc, Mutex };
+use std::fs;
+use std::process::Command;
+use std::io::{ Write, BufReader };
+
+// ------------------
+// 2. external crates
+// ------------------
+use rust_htslib::bgzf;
+use rust_htslib::tpool;
+use indicatif::{ ProgressBar, ProgressStyle };
+use rayon::{ ThreadPoolBuilder, prelude::* };
+
+// ------------------
+// 3. inner crate
+// ------------------
 use crate::argparse::{
     dedupbarcode::DedupBarcodeArgs,
     tilesmatch::TilesMatchArgs,
@@ -7,12 +27,6 @@ use crate::argparse::{
 };
 use crate::utils::error::AppError;
 
-use indicatif::{ ProgressBar, ProgressStyle };
-use rayon::{ ThreadPoolBuilder, prelude::* };
-use std::sync::{ Arc, Mutex };
-use std::{ fs, process::Command };
-use std::io::Write;
-
 /// Handles barcode viewing and deduplication
 ///
 /// # Arguments
@@ -21,6 +35,7 @@ use std::io::Write;
 /// # Errors
 /// Returns AppError for possible I/O errors or data processing errors
 pub fn dedupbarcode(args: DedupBarcodeArgs) -> Result<(), AppError> {
+    let args = args.init()?;
     args.dedup()?;
     Ok(())
 }
@@ -50,6 +65,7 @@ pub fn touchbarcode(args: TouchBarcodeArgs) -> Result<(), AppError> {
     let mut tile_ids = args.extract_tile_ids()?;
     println!("Extracted tile IDs from bcl directory RunInfo.xml file");
 
+    // Set cores
     println!("Use {} threads for conversion", args.cores());
 
     let pool = ThreadPoolBuilder::new()
@@ -57,6 +73,7 @@ pub fn touchbarcode(args: TouchBarcodeArgs) -> Result<(), AppError> {
         .build()
         .expect("Build thread pool failed");
 
+    // Set Step 1 ProgressBar
     let pb = ProgressBar::new(tile_ids.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
@@ -68,6 +85,7 @@ pub fn touchbarcode(args: TouchBarcodeArgs) -> Result<(), AppError> {
     );
     pb.set_prefix("BCL→FASTQ Conversion");
 
+    // Step 1
     pool.install(|| {
         tile_ids
             .par_iter()
@@ -85,6 +103,7 @@ pub fn touchbarcode(args: TouchBarcodeArgs) -> Result<(), AppError> {
     })?;
     pb.finish_with_message("Step 1: All tiles processed! ✅");
 
+    // Set Step 2 ProgressBar
     let pb = ProgressBar::new(tile_ids.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
@@ -96,11 +115,18 @@ pub fn touchbarcode(args: TouchBarcodeArgs) -> Result<(), AppError> {
     );
     pb.set_prefix("Extracting barcodes");
 
+    // Set Step 2 logfile
     let log_path = args.output().join("touchbarcode.log");
-    let log_file = Arc::new(
-        Mutex::new(fs::OpenOptions::new().create(true).append(true).open(&log_path)?)
-    );
+    let log_file = fs::OpenOptions
+        ::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&log_path)
+        .map(Mutex::new)
+        .map(Arc::new)?;
 
+    // Step 2
     pool.install(|| {
         tile_ids
             .par_iter()
@@ -119,38 +145,36 @@ pub fn touchbarcode(args: TouchBarcodeArgs) -> Result<(), AppError> {
             .collect::<Result<(), AppError>>()
     })?;
     pb.finish_with_message("Step 2: Barcode extraction completed! ✅");
+
+    // Step 2.5: sort
     tile_ids.par_sort_unstable();
-
-    let files: Vec<String> = tile_ids
+    let files: Vec<PathBuf> = tile_ids
         .iter()
-        .map(|tile_id| { args.output().join(format!("tmp/{tile_id}.txt")).display().to_string() })
+        .map(|tile_id| { args.output().join(format!("tmp/{tile_id}.txt")) })
         .collect();
-    let output_path = args.output().join("barcodes.txt.gz");
 
-    let output = Command::new("bash")
-        .arg("-c")
-        .arg(
-            &format!(
-                "{{ echo '#tile_id\tx_pos\ty_pos\tbarcode'; cat {}; }} | bgzip -@ $(nproc) > {}",
-                files.join(" "),
-                output_path.display()
-            )
-        )
-        .output()?;
-    if !output.status.success() {
-        return Err(
-            AppError::CommandError(
-                format!("bgzip run failed: {}", String::from_utf8_lossy(&output.stderr))
-            )
-        );
+    // Step 3: merge
+    let output_path = args.output().join("barcodes.txt.gz");
+    let mut writer = bgzf::Writer::from_path_with_level(&output_path, bgzf::CompressionLevel::Maximum)?;
+    let htslib_pool = tpool::ThreadPool::new(args.cores() as u32)?;
+    writer.set_thread_pool(&htslib_pool)?;
+    writer.write_all(b"#tile_id\tx_pos\ty_pos\tbarcode\n")?;
+
+    for path in &files {
+        let mut reader = fs::File::open(path).map(BufReader::new)?;
+        std::io::copy(&mut reader, &mut writer)?;
     }
+    writer.flush()?;
+    drop(writer);
+
     println!("Barcodes written to: {}", output_path.display());
     if tmp_dir.exists() {
         fs::remove_dir_all(&tmp_dir)?;
     }
 
+    // Step 4: write tabix index
     let tabix_status = Command::new("tabix")
-        .args(&["-0", "-s", "1", "-b", "3", "-e", "3", "-@", "$(nproc)"])
+        .args(&["-0", "-s", "1", "-b", "3", "-e", "3", "-@", args.cores().to_string().as_ref()])
         .arg(&output_path)
         .status()?;
     if !tabix_status.success() {

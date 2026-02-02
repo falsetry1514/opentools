@@ -3,7 +3,7 @@ use crate::utils::{
     position::Position,
     barcode_iter::{ validate_absolute_filepath, BarcodesIter },
     error::AppError,
-    barcode_config::{ BarcodeMode, validate_barcode_pattern },
+    barcode_config::{ BarcodeMode, OpenstContext, validate_barcode_pattern },
 };
 
 use std::io;
@@ -76,6 +76,8 @@ impl AddBCArgs {
             }
             (BarcodeMode::SCMethyl, None, None) => BarcodeMode::sc_methyl(),
             (BarcodeMode::ChromiumATAC, None, None) => BarcodeMode::chromium_atac(),
+            (BarcodeMode::Openst, None, None) => BarcodeMode::openst(OpenstContext::Tile),
+            (BarcodeMode::ChromiumMRNA, None, None) => BarcodeMode::chromium_mrna(),
             _ => {
                 unimplemented!("Other barcode modes are unimplemented!");
             }

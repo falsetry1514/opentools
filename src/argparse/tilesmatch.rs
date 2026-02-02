@@ -10,6 +10,7 @@ use std::collections::HashSet;
 // ------------------
 use clap::Parser;
 use sysinfo::System;
+use indicatif::{ ProgressBar, ProgressStyle };
 use rayon::{ ThreadPoolBuilder, prelude::* };
 use rust_htslib::tbx::{ Reader as TbxReader, Read };
 
@@ -44,11 +45,11 @@ pub struct TilesMatchArgs {
     tile_list: Option<Vec<u64>>,
 
     /// the number of barcodes used to query; 0 for unlimited
-    #[arg(short, long, default_value_t = 100_000_000)]
+    #[arg(short, long, default_value_t = 10_000)]
     num_barcode: usize,
 
     /// the threshold to filter tile
-    #[arg(short = 'M', long, default_value_t = 0.1)]
+    #[arg(short = 'M', long, default_value_t = 0.00001)]
     threshold: f32,
 
     /// The cores used for matching
@@ -93,17 +94,24 @@ pub struct TilesMatchArgs {
 
 impl TilesMatchArgs {
     pub fn init(self) -> Result<InitTilesMatchArgs, AppError> {
-        let (pos, pattern) = match (self.barcode_pos, self.barcode_pattern) {
-            (Some(pos), Some(pattern)) => (pos, pattern),
-            (None, None) => BarcodeMode::openst(OpenstContext::Tile),
-            _ => unreachable!("clap parse the error is impossible."),
+        let (pos, pattern) = match (self.mode, self.barcode_pos, self.barcode_pattern) {
+            (BarcodeMode::Custom, Some(pos), Some(pattern)) => (pos, pattern),
+            (BarcodeMode::Custom, _, _) => {
+                return Err(
+                    AppError::CommandError(
+                        "Custom barcode mode requires --barcode-pos and --barcode-pattern".into()
+                    )
+                );
+            }
+            (BarcodeMode::Openst, None, None) => BarcodeMode::openst(OpenstContext::Tile),
+            _ => {
+                unimplemented!("Other barcode modes are unimplemented!");
+            }
         };
 
-        let tile_list = if let Some(list) = self.tile_list {
-            list
-        } else {
+        let tile_list = self.tile_list.unwrap_or_else(|| {
             VALID_TILE_IDS.to_vec()
-        };
+        });
 
         let upper_cores = {
             let mut sys = System::new();
@@ -191,12 +199,24 @@ impl InitTilesMatchArgs {
     }
 
     pub fn search_tile(&self) -> Result<Vec<TileMatchReport>, AppError> {
+        // Step 1
         let barcode_list = self.create_barcode_iter()?.extract_sample_barcodes(self.num_barcode)?;
 
+        // Set Step 2 ThreadPool
         let pool = ThreadPoolBuilder::new()
             .num_threads(self.cores())
             .build()
             .expect("Build thread pool failed");
+
+        // Set Step 2 ProgressBar
+        let pb = ProgressBar::new(self.tile_list.len() as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{prefix:.bold.dim} {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({eta})")
+                .unwrap()
+                .progress_chars("#>-"),
+        );
+        pb.set_prefix("Searching tiles");
 
         pool.install(|| {
             self.tile_list
@@ -229,6 +249,9 @@ impl InitTilesMatchArgs {
                     let passed_num = tile_list.intersection(&barcode_list).count();
                     let percent = (passed_num as f32) / (tile_list.len() as f32);
                     let pass_threshold = percent >= self.threshold;
+
+                    pb.inc(1);
+
                     Ok(
                         TileMatchReport::new(
                             tile_id,
