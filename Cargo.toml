@@ -1,6 +1,6 @@
 [package]
 name = "opentools"
-version = "0.1.1-alpha.2"
+version = "0.1.1-alpha.2.1"
 edition = "2024"
 authors = ["Falsetry <falsetryczz@gmail.com>"]
 license = "MIT"

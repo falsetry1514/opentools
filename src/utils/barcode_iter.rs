@@ -140,10 +140,8 @@ impl<'a, R: Read> BarcodesIter<'a, R> {
                 return Ok(());
             }
 
-            let seq = unsafe { String::from_utf8_unchecked(br.seq().to_owned()) };
-
             buffer.push(
-                format!("{}{}\t{}\t{}\t{}\n", br.lane(), br.tile(), br.x_pos(), br.y_pos(), seq)
+                format!("{}{}\t{}\t{}\t{}\n", br.lane(), br.tile(), br.x_pos(), br.y_pos(), br.process_sequence())
             );
 
             if buffer.len() >= 1000 {
