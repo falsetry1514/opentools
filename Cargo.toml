@@ -6,12 +6,7 @@ authors = ["Falsetry <falsetryczz@gmail.com>"]
 license = "MIT"
 description = "A rust toolbox that process OpenST chip data"
 repository = "https://github.com/falsetry1514/opentools.git"
-exclude = [
-    "template.sh",
-    "target/*",
-    ".gitinore",
-    "Cargo.lock"
-]
+exclude = ["template.sh", "target/*", ".gitinore", "Cargo.lock"]
 
 [dependencies]
 clap = { version = "4.5.38", features = ["derive"] }
@@ -22,7 +17,7 @@ indicatif = "0.18.0"
 itertools = "0.14.0"
 rayon = "1.10.0"
 regex = "1.11.1"
-rust-htslib = "0.51.0"
+rust-htslib = "1.0.0"
 seq_io = "0.3.4"
-sysinfo = "0.37.0"
-thiserror = "2.0.17"
+sysinfo = "0.38.2"
+thiserror = "2.0.18"

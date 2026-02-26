@@ -218,7 +218,7 @@ impl InitTilesMatchArgs {
         );
         pb.set_prefix("Searching tiles");
 
-        pool.install(|| {
+        let res = pool.install(|| {
             self.tile_list
                 .par_iter()
                 .map(|&tile_id| {
@@ -263,7 +263,11 @@ impl InitTilesMatchArgs {
                     )
                 })
                 .collect::<Result<Vec<TileMatchReport>, AppError>>()
-        })
+        });
+        
+        pb.finish_and_clear();
+
+        res
     }
 }
 

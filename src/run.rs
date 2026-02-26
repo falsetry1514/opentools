@@ -101,6 +101,11 @@ pub fn touchbarcode(args: TouchBarcodeArgs) -> Result<(), AppError> {
             })
             .collect::<Result<(), AppError>>()
     })?;
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{prefix:.bold.dim} [{elapsed_precise}] {msg}")
+            .unwrap()
+    );
     pb.finish_with_message("Step 1: All tiles processed! ✅");
 
     // Set Step 2 ProgressBar
@@ -108,7 +113,7 @@ pub fn touchbarcode(args: TouchBarcodeArgs) -> Result<(), AppError> {
     pb.set_style(
         ProgressStyle::default_bar()
             .template(
-                "{prefix:.bold.dim} {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({eta})"
+                "{prefix:.bold.dim} {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} {msg} ({eta})"
             )
             .unwrap()
             .progress_chars("#>-")
@@ -144,6 +149,11 @@ pub fn touchbarcode(args: TouchBarcodeArgs) -> Result<(), AppError> {
             })
             .collect::<Result<(), AppError>>()
     })?;
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{prefix:.bold.dim} [{elapsed_precise}] {msg}")
+            .unwrap()
+    );
     pb.finish_with_message("Step 2: Barcode extraction completed! ✅");
 
     // Step 2.5: sort
@@ -160,12 +170,31 @@ pub fn touchbarcode(args: TouchBarcodeArgs) -> Result<(), AppError> {
     writer.set_thread_pool(&htslib_pool)?;
     writer.write_all(b"#tile_id\tx_pos\ty_pos\tbarcode\n")?;
 
+    let pb = ProgressBar::new(files.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template(
+                "{prefix:.bold.dim} {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} {msg} ({eta})"
+            )
+            .unwrap()
+            .progress_chars("#>-")
+    );
+    pb.set_prefix("Merging tiles");
+
     for path in &files {
         let mut reader = fs::File::open(path).map(BufReader::new)?;
         std::io::copy(&mut reader, &mut writer)?;
+        pb.inc(1);
     }
     writer.flush()?;
     drop(writer);
+
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{prefix:.bold.dim} [{elapsed_precise}] {msg}")
+            .unwrap()
+    );
+    pb.finish_with_message("Step 3: Merging tiles completed! ✅");
 
     println!("Barcodes written to: {}", output_path.display());
     if tmp_dir.exists() {

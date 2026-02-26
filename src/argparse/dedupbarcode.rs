@@ -223,7 +223,7 @@ impl InitDedupBarcodeArgs {
             .unwrap()?;
 
         producer_handle.join().unwrap()?;
-        pb.finish_with_message("Processing tiles ✅");
+        pb.finish_and_clear();
 
         Ok(())
     }
