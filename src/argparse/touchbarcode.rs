@@ -43,7 +43,7 @@ pub struct TouchBarcodeArgs {
     cores: Option<usize>,
 
     /// barcode parsing mode
-    #[arg(short, long, value_enum, default_value_t = BarcodeMode::Openst)]
+    #[arg(short, long, value_enum, default_value_t = BarcodeMode::Openst28bc)]
     mode: BarcodeMode,
 
     /// turn on to run fastqc on each tile's fastq file
@@ -93,7 +93,8 @@ impl TouchBarcodeArgs {
                     )
                 );
             }
-            (BarcodeMode::Openst, None, None) => BarcodeMode::openst(OpenstContext::Chip),
+            (BarcodeMode::Openst28bc, None, None) => BarcodeMode::openst(OpenstContext::Chip28),
+            (BarcodeMode::Openst32bc, None, None) => BarcodeMode::openst(OpenstContext::Chip32),
             _ => {
                 unimplemented!("Other barcode modes are unimplemented!");
             }
@@ -276,7 +277,7 @@ impl InitTouchBarcodeArgs {
         }
 
         // 检查执行状态
-        (!output.status.success())
+        output.status.success()
             .then(|| ())
             .ok_or_else(|| AppError::CommandError(format!("{} in tile_id {}", error_msg, tile_id)))
     }
@@ -363,7 +364,7 @@ impl InitTouchBarcodeArgs {
     pub fn create_barcode_iter(
         &self,
         tile_id: &str
-    ) -> io::Result<BarcodesIter<impl std::io::Read>> {
+    ) -> io::Result<BarcodesIter<'_, impl std::io::Read>> {
         let inner = open(self.fastq_path(tile_id).join("Undetermined_S0_R1_001.fastq.gz"))?;
         Ok(BarcodesIter::new(inner, self.pos(), self.pattern()))
     }

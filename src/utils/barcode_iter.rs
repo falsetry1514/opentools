@@ -3,8 +3,8 @@ use crate::utils::{
     error::AppError,
     position::Position,
 };
-use seq_io::fastq::{ Record, Reader};
-use std::collections::HashSet;
+use seq_io::fastq::{ Record, Reader };
+use std::collections::{ HashMap, HashSet};
 use std::io::{ self, Write, Read };
 use std::path::{ Path, PathBuf };
 
@@ -182,6 +182,30 @@ impl<'a, R: Read> BarcodesIter<'a, R> {
         })?;
 
         Ok(barcode_set)
+    }
+
+    pub fn stat_sample_barcodes(mut self, capacity: usize) -> Result<HashMap<String, usize>, AppError> {
+        let mut barcode_counts = HashMap::new();
+        let mut unique_barcode_num = 0;
+
+        Self::for_each_barcode(&mut self.inner, self.pos, |br| {
+            let bc = br.process_sequence();
+
+            let count = barcode_counts.entry(bc).or_insert(0 as usize);
+            if *count == 0 {
+                unique_barcode_num += 1;
+                if capacity != 0 && unique_barcode_num >= capacity {
+                    // 直接提前终止
+                    *count += 1;
+                    return Err(AppError::EarlyStop);
+                }
+            }
+            Ok(())
+        }).or_else(|e| {
+            if matches!(e, AppError::EarlyStop) { Ok(()) } else { Err(e) }
+        })?;
+
+        Ok(barcode_counts)
     }
 }
 

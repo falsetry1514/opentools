@@ -76,7 +76,8 @@ impl AddBCArgs {
             }
             (BarcodeMode::SCMethyl, None, None) => BarcodeMode::sc_methyl(),
             (BarcodeMode::ChromiumATAC, None, None) => BarcodeMode::chromium_atac(),
-            (BarcodeMode::Openst, None, None) => BarcodeMode::openst(OpenstContext::Tile),
+            (BarcodeMode::Openst28bc, None, None) => BarcodeMode::openst(OpenstContext::Tile28),
+            (BarcodeMode::Openst32bc, None, None) => BarcodeMode::openst(OpenstContext::Tile32),
             (BarcodeMode::ChromiumMRNA, None, None) => BarcodeMode::chromium_mrna(),
             _ => {
                 unimplemented!("Other barcode modes are unimplemented!");

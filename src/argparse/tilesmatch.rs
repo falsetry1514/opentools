@@ -61,7 +61,7 @@ pub struct TilesMatchArgs {
     quiet: bool,
 
     /// barcode/UMI parsing mode
-    #[arg(short, long, value_enum, default_value_t = BarcodeMode::Openst)]
+    #[arg(short, long, value_enum, default_value_t = BarcodeMode::Openst28bc)]
     mode: BarcodeMode,
 
     /// Custom barcode position (only effective when mode=custom)
@@ -103,7 +103,8 @@ impl TilesMatchArgs {
                     )
                 );
             }
-            (BarcodeMode::Openst, None, None) => BarcodeMode::openst(OpenstContext::Tile),
+            (BarcodeMode::Openst28bc, None, None) => BarcodeMode::openst(OpenstContext::Tile28),
+            (BarcodeMode::Openst32bc, None, None) => BarcodeMode::openst(OpenstContext::Tile32),
             _ => {
                 unimplemented!("Other barcode modes are unimplemented!");
             }
@@ -185,7 +186,7 @@ impl InitTilesMatchArgs {
         self.cores
     }
 
-    fn create_barcode_iter(&self) -> Result<BarcodesIter<impl std::io::Read>, AppError> {
+    fn create_barcode_iter(&self) -> Result<BarcodesIter<'_, impl std::io::Read>, AppError> {
 
         let inner = open(&self.read)?;
         // HashSet::with_capacity(self.num_barcode)

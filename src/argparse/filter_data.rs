@@ -14,7 +14,7 @@ use regex::Regex;
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(name = "statsbc")]
+#[command(name = "filter")]
 #[command(
     about = "Barcode Statistic", 
     long_about = "\
@@ -34,7 +34,7 @@ pub struct StatsBCArgs {
     output: Option<PathBuf>,
 
     /// barcode parsing mode
-    #[arg(short = 'm', long, value_enum, default_value_t = BarcodeMode::Openst28bc)]
+    #[arg(short = 'm', long, value_enum, default_value_t = BarcodeMode::Openst)]
     mode: BarcodeMode,
 
     /// Custom barcode position (only effective when mode=custom)
@@ -91,8 +91,7 @@ impl StatsBCArgs {
             }
             (BarcodeMode::SCMethyl, None, None) => BarcodeMode::sc_methyl(),
             (BarcodeMode::ChromiumATAC, None, None) => BarcodeMode::chromium_atac(),
-            (BarcodeMode::Openst28bc, None, None) => BarcodeMode::openst(OpenstContext::Tile28),
-            (BarcodeMode::Openst32bc, None, None) => BarcodeMode::openst(OpenstContext::Tile32),
+            (BarcodeMode::Openst, None, None) => BarcodeMode::openst(OpenstContext::Tile),
             (BarcodeMode::ChromiumMRNA, None, None) => BarcodeMode::chromium_mrna(),
             _ => {
                 unimplemented!("Other barcode modes are unimplemented!");
