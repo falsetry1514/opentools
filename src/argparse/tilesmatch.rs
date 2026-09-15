@@ -19,7 +19,7 @@ use rust_htslib::tbx::{ Reader as TbxReader, Read };
 // ------------------
 use crate::utils::{
     barcode_config::{ BarcodeMode, OpenstContext, validate_barcode_pattern },
-    barcode_iter::{ validate_absolute_filepath, BarcodesIter },
+    barcode_iter::{ BarcodesIter, QualityFilterMode, QualityFilter, validate_absolute_filepath },
     fastq_iter::open,
     position::Position,
     error::AppError,
@@ -90,6 +90,34 @@ pub struct TilesMatchArgs {
         value_name = "BARCODE_PATTERN"
     )]
     barcode_pattern: Option<String>,
+
+    /// barcode quality filter mode
+    #[arg(short, long, value_enum, default_value_t = QualityFilterMode::Strict)]
+    quality_filter: QualityFilterMode,
+
+    /// Custom quality filter mininium quanity (only effective when quality_filter=custom)
+    #[arg(
+        long,
+        required_if_eq("quality_filter", "custom"),
+        value_name = "MIN_QUALITY"
+    )]
+    min_quality: Option<u8>,
+
+    /// Custom quality filter low quanity (only effective when quality_filter=custom)
+    #[arg(
+        long,
+        required_if_eq("quality_filter", "custom"),
+        value_name = "LOW_QUALITY_THRESHOLD"
+    )]
+    low_quality_threshold: Option<u8>,
+
+    /// Custom quality filter low quanity base number (only effective when quality_filter=custom)
+    #[arg(
+        long,
+        required_if_eq("quality_filter", "custom"),
+        value_name = "MAX_LOW_QUALITY_BASES"
+    )]
+    max_low_quality_bases: Option<usize>,
 }
 
 impl TilesMatchArgs {
@@ -107,6 +135,29 @@ impl TilesMatchArgs {
             (BarcodeMode::Openst32bc, None, None) => BarcodeMode::openst(OpenstContext::Tile32),
             _ => {
                 unimplemented!("Other barcode modes are unimplemented!");
+            }
+        };
+
+        let quality_filter = match (
+            self.quality_filter, 
+            self.min_quality, 
+            self.low_quality_threshold, 
+            self.max_low_quality_bases
+        ) {
+            (QualityFilterMode::Custom, Some(min_quality), Some(low_quality_threshold), Some(max_low_quality_bases)) => QualityFilter::new(
+                min_quality, low_quality_threshold, max_low_quality_bases,
+            ),
+            (QualityFilterMode::Custom, _, _, _) => {
+                return Err(
+                    AppError::CommandError(
+                        "Custom Quality Filter mode requires --min-quality, --low-quality-threshold and --max-low-quality-bases".into()
+                    )
+                )
+            },
+            (QualityFilterMode::Strict, None, None, None) => QualityFilter::strict(),
+            (QualityFilterMode::Loose, None, None, None) => QualityFilter::loose(),
+            _ => {
+                unimplemented!("Other Quality Filter modes are unimplemented!");
             }
         };
 
@@ -132,7 +183,8 @@ impl TilesMatchArgs {
                 n_core,
                 self.quiet,
                 pos,
-                pattern
+                pattern,
+                quality_filter
             )
         )
     }
@@ -148,6 +200,7 @@ pub struct InitTilesMatchArgs {
     quiet: bool,
     pos: Position,
     pattern: String,
+    quality_filter: QualityFilter
 }
 
 impl InitTilesMatchArgs {
@@ -161,7 +214,8 @@ impl InitTilesMatchArgs {
         cores: usize,
         quiet: bool,
         pos: Position,
-        pattern: String
+        pattern: String,
+        quality_filter: QualityFilter
     ) -> Self {
         Self {
             read,
@@ -173,6 +227,7 @@ impl InitTilesMatchArgs {
             quiet,
             pos,
             pattern,
+            quality_filter,
         }
     }
 
@@ -195,6 +250,7 @@ impl InitTilesMatchArgs {
                 inner,
                 &self.pos,
                 &self.pattern,
+                self.quality_filter
             )
         )
     }

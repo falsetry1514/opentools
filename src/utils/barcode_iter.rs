@@ -1,12 +1,12 @@
 use crate::argparse::touchbarcode::TouchBarcodeReport;
-use crate::utils::{
-    error::AppError,
-    position::Position,
-};
-use seq_io::fastq::{ Record, Reader };
-use std::collections::{ HashMap, HashSet};
+use crate::utils::{ error::AppError, position::Position };
+
+use std::collections::{ HashMap, HashSet };
 use std::io::{ self, Write, Read };
 use std::path::{ Path, PathBuf };
+
+use clap::ValueEnum;
+use seq_io::fastq::{ Record, Reader };
 
 pub fn validate_absolute_dirpath(s: &str) -> io::Result<PathBuf> {
     let mut path = Path::new(s).to_path_buf();
@@ -61,11 +61,7 @@ fn parse_id(id: &str) -> (&str, &str, &str, &str) {
 }
 
 pub fn process_sequence(seq: &[u8], revcomp: bool) -> String {
-    let seq = if revcomp {
-        seq.iter().rev().map(complement).collect()
-    } else {
-        seq.to_vec()
-    };
+    let seq = if revcomp { seq.iter().rev().map(complement).collect() } else { seq.to_vec() };
     unsafe { String::from_utf8_unchecked(seq) }
 }
 
@@ -73,16 +69,23 @@ pub struct BarcodesIter<'a, R: Read> {
     inner: Reader<R>,
     pos: &'a Position,
     pattern: &'a str,
+    quality_filter: QualityFilter,
 }
 
 impl<'a, R: Read> BarcodesIter<'a, R> {
     // Factory mathod
     #[inline]
-    pub fn new(inner: Reader<R>, pos: &'a Position, pattern: &'a str) -> Self {
+    pub fn new(
+        inner: Reader<R>,
+        pos: &'a Position,
+        pattern: &'a str,
+        quality_filter: QualityFilter
+    ) -> Self {
         Self {
             inner,
             pos,
             pattern,
+            quality_filter,
         }
     }
 
@@ -95,11 +98,7 @@ impl<'a, R: Read> BarcodesIter<'a, R> {
         &mut self.inner
     }
 
-    fn for_each_barcode<F>(
-        inner: &mut Reader<R>,
-        pos: &Position,
-        mut f: F
-    ) -> Result<(), AppError>
+    fn for_each_barcode<F>(inner: &mut Reader<R>, pos: &Position, mut f: F) -> Result<(), AppError>
         where F: FnMut(BarcodeRecord) -> Result<(), AppError>
     {
         for rec in inner.records() {
@@ -114,7 +113,10 @@ impl<'a, R: Read> BarcodesIter<'a, R> {
     }
 
     // Public method
-    pub fn extract_chip_barcodes<W: Write>(mut self, mut writer: W) -> Result<TouchBarcodeReport, AppError> {
+    pub fn extract_chip_barcodes<W: Write>(
+        mut self,
+        mut writer: W
+    ) -> Result<TouchBarcodeReport, AppError> {
         let mut seen_positions = HashSet::new();
         let mut buffer = Vec::with_capacity(1000);
 
@@ -127,7 +129,7 @@ impl<'a, R: Read> BarcodesIter<'a, R> {
             total_count += 1;
             let pos_key = (br.x_pos().to_string(), br.y_pos().to_string());
 
-            if br.fail_quality_filter() {
+            if self.quality_filter.fail(br.qual) {
                 filter_qual_count += 1;
                 return Ok(());
             }
@@ -141,7 +143,14 @@ impl<'a, R: Read> BarcodesIter<'a, R> {
             }
 
             buffer.push(
-                format!("{}{}\t{}\t{}\t{}\n", br.lane(), br.tile(), br.x_pos(), br.y_pos(), br.process_sequence())
+                format!(
+                    "{}{}\t{}\t{}\t{}\n",
+                    br.lane(),
+                    br.tile(),
+                    br.x_pos(),
+                    br.y_pos(),
+                    br.process_sequence()
+                )
             );
 
             if buffer.len() >= 1000 {
@@ -161,7 +170,14 @@ impl<'a, R: Read> BarcodesIter<'a, R> {
         }
         writer.flush()?;
 
-        Ok(TouchBarcodeReport::new(total_count, filter_qual_count, filter_seq_count, filter_dup_count))
+        Ok(
+            TouchBarcodeReport::new(
+                total_count,
+                filter_qual_count,
+                filter_seq_count,
+                filter_dup_count
+            )
+        )
     }
 
     pub fn extract_sample_barcodes(mut self, capacity: usize) -> Result<HashSet<String>, AppError> {
@@ -184,7 +200,10 @@ impl<'a, R: Read> BarcodesIter<'a, R> {
         Ok(barcode_set)
     }
 
-    pub fn stat_sample_barcodes(mut self, capacity: usize) -> Result<HashMap<String, usize>, AppError> {
+    pub fn stat_sample_barcodes(
+        mut self,
+        capacity: usize
+    ) -> Result<HashMap<String, usize>, AppError> {
         let mut barcode_counts = HashMap::new();
         let mut unique_barcode_num = 0;
 
@@ -215,8 +234,12 @@ impl<'a, R: Read> Iterator for BarcodesIter<'a, R> {
     fn next(&mut self) -> Option<Self::Item> {
         let rec = match self.inner.next() {
             Some(Ok(bc)) => bc.to_owned_record(),
-            Some(Err(e)) => return Some(Err(e.into())),
-            None => return None,
+            Some(Err(e)) => {
+                return Some(Err(e.into()));
+            }
+            None => {
+                return None;
+            }
         };
 
         let seq = self.pos.safe_slice(&rec.seq);
@@ -224,9 +247,80 @@ impl<'a, R: Read> Iterator for BarcodesIter<'a, R> {
         let id = rec.id().expect("Invalid record id");
         let (lane, tile, x_pos, y_pos) = parse_id(id);
 
-        let barcode = BarcodeRecord::new(seq, qual, lane, tile, x_pos, y_pos, self.pos.is_revcomp()).process_sequence();
+        let barcode = BarcodeRecord::new(
+            seq,
+            qual,
+            lane,
+            tile,
+            x_pos,
+            y_pos,
+            self.pos.is_revcomp()
+        ).process_sequence();
 
         Some(Ok(barcode))
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum QualityFilterMode {
+    Loose,
+    Strict,
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct QualityFilter {
+    pub min_quality: u8,
+    pub low_quality_threshold: u8,
+    pub max_low_quality_bases: usize,
+}
+
+impl QualityFilter {
+    #[inline]
+    pub const fn new(min_quality: u8, low_quality_threshold: u8, max_low_quality_bases: usize) -> Self {
+        Self {
+            min_quality,
+            low_quality_threshold,
+            max_low_quality_bases,
+        }
+    }
+
+    #[inline]
+    pub const fn strict() -> Self {
+        Self {
+            min_quality: 20,
+            low_quality_threshold: 30,
+            max_low_quality_bases: 2,
+        }
+    }
+
+    #[inline]
+    pub const fn loose() -> Self {
+        Self {
+            min_quality: 10,
+            low_quality_threshold: 20,
+            max_low_quality_bases: 5,
+        }
+    }
+
+    #[inline]
+    pub fn fail(&self, qual: &[u8]) -> bool {
+        let min_q = self.min_quality + 33;
+        let low_q = self.low_quality_threshold + 33;
+
+        let mut low_count = 0usize;
+
+        for &q in qual {
+            if q < min_q {
+                return false;
+            }
+
+            if q < low_q {
+                low_count += 1;
+            }
+        }
+
+        low_count > self.max_low_quality_bases
     }
 }
 
@@ -297,19 +391,19 @@ impl<'a> BarcodeRecord<'a> {
         self.revcomp
     }
 
-    // Associated method
-    pub fn fail_quality_filter(&self) -> bool {
-        let mut low_qual_count: u64 = 0;
-        for &q in self.qual {
-            if q < 53 {
-                return true;
-            }
-            if q < 63 {
-                low_qual_count += 1;
-            }
-        }
-        low_qual_count > 2
-    }
+    // // Associated method
+    // pub fn fail_quality_filter(&self) -> bool {
+    //     let mut low_qual_count: u64 = 0;
+    //     for &q in self.qual {
+    //         if q < 53 {
+    //             return true;
+    //         }
+    //         if q < 63 {
+    //             low_qual_count += 1;
+    //         }
+    //     }
+    //     low_qual_count > 2
+    // }
 
     pub fn fail_sequence_filter(&self, pattern: &str) -> bool {
         self.seq
@@ -327,5 +421,3 @@ impl<'a> BarcodeRecord<'a> {
         unsafe { String::from_utf8_unchecked(seq) }
     }
 }
-
-

@@ -22,8 +22,6 @@ use crate::argparse::{
     dedupbarcode::DedupBarcodeArgs,
     tilesmatch::TilesMatchArgs,
     touchbarcode::TouchBarcodeArgs,
-    add_bc::AddBCArgs,
-    stats_bc::StatsBCArgs,
 };
 use crate::utils::error::AppError;
 
@@ -239,17 +237,5 @@ pub fn tilesmatch(args: TilesMatchArgs) -> Result<(), AppError> {
         }
     });
 
-    Ok(())
-}
-
-pub fn add_bc(args: AddBCArgs) -> Result<(), AppError> {
-    let args = args.init()?;
-    args.run_add_cb()?;
-    Ok(())
-}
-
-pub fn stats_bc(args: StatsBCArgs) -> Result<(), AppError> {
-    let args = args.init()?;
-    args.run_stats_cb()?;
     Ok(())
 }

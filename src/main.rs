@@ -10,8 +10,6 @@ fn main() -> Result<(), AppError> {
         Commands::TouchBarcode(args) => run::touchbarcode(args)?,
         Commands::ViewBarcode(args) => run::dedupbarcode(args)?,
         Commands::TilesMatch(args) => run::tilesmatch(args)?,
-        Commands::AddBC(args) => run::add_bc(args)?,
-        Commands::StatsBC(args) => run::stats_bc(args)?,
     }
 
     Ok(())
